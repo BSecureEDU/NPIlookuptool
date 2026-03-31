@@ -299,11 +299,9 @@ body {
 
 <script>
 // ── Constants ──
-const API_URL = 'https://npiregistry.cms.hhs.gov/api/';
+const API_URL = 'https://humana-fhir-proxy.npilookuptool.workers.dev/nppes/';
 const API_VERSION = '2.1';
-// CORS proxy — replace YOUR-SUBDOMAIN with your actual Cloudflare Workers subdomain
-// Get this URL after deploying the Worker in the humana-proxy folder
-const HUMANA_FHIR_BASE = 'https://humana-fhir-proxy.npilookuptool.workers.dev';
+const HUMANA_FHIR_BASE = 'https://humana-fhir-proxy.npilookuptool.workers.dev/humana';
 const AUTO_ENRICH_LIMIT = 5;
 
 let currentMode = 'individual';

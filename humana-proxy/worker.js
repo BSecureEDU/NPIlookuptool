@@ -1,22 +1,26 @@
 /**
  * NPI Lookup Tool — CORS Proxy (Cloudflare Worker)
  *
- * Proxies two APIs that block direct browser requests:
+ * Proxies three APIs that block direct browser requests:
  *   /nppes/*   → https://npiregistry.cms.hhs.gov/api/
  *   /humana/*  → https://fhir.humana.com/api/
+ *   /finder/*  → https://finder.humana.com/finder/
  *
- * Both are public APIs required by CMS rules — the proxy simply adds
- * the CORS headers the browser needs to call them.
+ * The NPPES and FHIR APIs are public CMS-mandated endpoints.
+ * The finder API is Humana's provider directory search (more complete
+ * than FHIR — includes providers missing from the FHIR directory).
+ * The proxy simply adds the CORS headers the browser needs.
  */
 
 const TARGETS = {
   '/nppes':  'https://npiregistry.cms.hhs.gov/api',
   '/humana': 'https://fhir.humana.com/api',
+  '/finder': 'https://finder.humana.com/finder',
 };
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin':  '*',
-  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Accept, Content-Type',
 };
 
@@ -28,7 +32,7 @@ export default {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
 
-    if (request.method !== 'GET') {
+    if (request.method !== 'GET' && request.method !== 'POST') {
       return new Response('Method not allowed', { status: 405, headers: CORS_HEADERS });
     }
 
@@ -53,12 +57,20 @@ export default {
     const targetUrl = targetBase + strippedPath + url.search;
 
     try {
+      // Build upstream headers — POST requests forward Content-Type
+      const upstreamHeaders = {
+        'Accept': 'application/fhir+json, application/json',
+        'User-Agent': 'NPI-Lookup-Tool/2.7',
+      };
+      if (request.method === 'POST') {
+        upstreamHeaders['Content-Type'] = request.headers.get('Content-Type') || 'application/json';
+      }
+
       const response = await fetch(targetUrl, {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/fhir+json, application/json',
-          'User-Agent': 'NPI-Lookup-Tool/2.5',
-        },
+        method: request.method,
+        headers: upstreamHeaders,
+        // Forward the body for POST requests
+        body: request.method === 'POST' ? request.body : undefined,
       });
 
       const body = await response.text();

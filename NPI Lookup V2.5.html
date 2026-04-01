@@ -1,0 +1,1027 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NPI Lookup Tool</title>
+<style>
+:root {
+  --bg: #181825;
+  --surface: #1e1e2e;
+  --surface-alt: #232336;
+  --surface-hover: #2a2a40;
+  --border: #313147;
+  --border-light: #3b3b55;
+  --text: #cdd6f4;
+  --text-secondary: #a6adc8;
+  --text-dim: #6c7086;
+  --accent: #7c5cfc;
+  --accent-hover: #6a4de0;
+  --accent-dim: rgba(124,92,252,0.19);
+  --accent-text: #ffffff;
+  --success: #a6e3a1;
+  --success-dim: #2a3a2a;
+  --warning: #fab387;
+  --warning-dim: #2a2518;
+  --info: #89b4fa;
+  --info-dim: #1e2a3a;
+  --card-bg: #252538;
+  --card-hover: #11111b;
+  --input-bg: #4db848;
+  --input-border: #1a2e1a;
+  --input-focus: #2a2a3e;
+  --org-accent: #4db848;
+  --org-accent-dim: #1a2e1a;
+  --humana: #4db848;
+  --humana-dim: #1a2e1a;
+  --separator: #2a2a3e;
+  --font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --mono: 'Consolas', 'Courier New', monospace;
+}
+.light-mode {
+  --bg: #f0f0f5;
+  --surface: #e8e8f0;
+  --surface-alt: #dcdce8;
+  --surface-hover: #c0c0d0;
+  --border: #d0d0e0;
+  --border-light: #d0d0e0;
+  --text: #1a1a2e;
+  --text-secondary: #444466;
+  --text-dim: #888899;
+  --accent: #6b46e5;
+  --accent-hover: #5a38cc;
+  --accent-dim: rgba(107,70,229,0.12);
+  --accent-text: #ffffff;
+  --success: #2d8f3e;
+  --success-dim: #e0f5e4;
+  --warning: #c87030;
+  --warning-dim: #fdf0e6;
+  --info: #3070c0;
+  --info-dim: #e0ecfa;
+  --card-bg: #f5f5fa;
+  --card-hover: #f8f8fc;
+  --input-bg: #f5f5fa;
+  --input-border: #d8d8e8;
+  --input-focus: #6b46e5;
+  --org-accent: #2d8f3e;
+  --org-accent-dim: #e0f5e4;
+  --humana: #2d8f3e;
+  --humana-dim: #e0f5e4;
+  --separator: #d8d8e8;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: var(--font-family);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+.header {
+  background: var(--surface);
+  padding: 0;
+  border-bottom: 4px solid var(--accent);
+}
+.header-inner {
+  display: flex; align-items: center; padding: 12px 16px; gap: 12px;
+}
+.header h1 { font-size: 15px; font-weight: bold; }
+.header .subtitle { font-size: 10px; color: var(--text-dim); margin-left: 10px; }
+.header .ver-badge {
+  font-size: 8px; background: var(--surface-alt); color: var(--text-dim);
+  padding: 2px 6px; border-radius: 3px;
+}
+.header-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.btn {
+  font-family: var(--font-family); font-size: 9px; border: none; padding: 6px 12px;
+  border-radius: 4px; cursor: pointer; transition: background 0.15s;
+}
+.btn-accent {
+  background: var(--accent); color: var(--accent-text);
+}
+.btn-accent:hover { background: var(--accent-hover); }
+.btn-surface {
+  background: var(--surface-hover); color: var(--text);
+}
+.btn-surface:hover { background: var(--border); }
+.btn-success {
+  background: var(--success); color: #1a1a2e;
+}
+.btn-success:hover { opacity: 0.9; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.main { padding: 12px; }
+.search-outer {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 20px;
+}
+.mode-row { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; }
+.mode-label { font-size: 9px; color: var(--text-dim); margin-right: 8px; }
+.mode-btn {
+  font-family: var(--font-family); font-size: 9px; padding: 6px 14px; border: none;
+  border-radius: 4px; cursor: pointer; background: var(--surface-alt); color: var(--text-dim);
+  transition: all 0.15s;
+}
+.mode-btn.active { background: var(--accent); color: var(--accent-text); }
+.search-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.field label { display: block; font-size: 9px; color: var(--text-secondary); margin-bottom: 3px; }
+.field input, .field select {
+  width: 100%; font-family: var(--font-family); font-size: 10px;
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--card-bg); color: var(--text); outline: none;
+  transition: border-color 0.15s;
+}
+.field input:focus, .field select:focus { border-color: var(--accent); }
+.btn-row { display: flex; gap: 8px; align-items: center; }
+.separator { height: 1px; background: var(--separator); margin: 10px 0; }
+
+.results-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 0;
+}
+.status-text { font-size: 10px; color: var(--text-dim); }
+.results-area { display: flex; flex-direction: column; gap: 8px; }
+
+.card {
+  display: flex; border-radius: 6px; overflow: hidden;
+  background: var(--card-bg); transition: background 0.15s;
+}
+.card:hover { background: var(--surface-hover); }
+.card-stripe { width: 4px; flex-shrink: 0; }
+.card-stripe.individual { background: var(--accent); }
+.card-stripe.org { background: var(--org-accent); }
+.card-body { flex: 1; padding: 10px 14px; }
+.card-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.card .name { font-size: 11px; font-weight: bold; }
+.card .org-badge {
+  font-size: 7px; font-weight: bold; padding: 1px 6px; border-radius: 3px;
+  background: var(--org-accent); color: #fff;
+}
+.card .npi-row { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.card .npi-label { font-size: 9px; color: var(--text-dim); }
+.card .npi-value { font-family: var(--mono); font-size: 10px; }
+.card .copy-btn {
+  font-size: 8px; padding: 2px 8px; border: none; border-radius: 3px;
+  background: var(--accent); color: var(--accent-text); cursor: pointer;
+}
+.card .copy-btn:hover { background: var(--accent-hover); }
+.card .specialty { font-size: 9px; color: var(--success); margin-top: 4px; }
+.card .address { font-size: 9px; color: var(--text-dim); margin-top: 2px; }
+.card .phone { font-size: 9px; color: var(--text-dim); margin-top: 2px; }
+.card .org-info {
+  margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--separator);
+}
+.card .org-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.card .org-label-text { font-size: 9px; color: var(--warning); font-weight: bold; }
+.card .org-name-text { font-size: 9px; }
+.card .org-npi-text { font-family: var(--mono); font-size: 9px; color: var(--text-dim); }
+.card .match-method { font-size: 7px; color: var(--text-dim); }
+.card .find-org-btn {
+  font-size: 9px; padding: 3px 12px; border: none; border-radius: 3px;
+  background: var(--accent-dim); color: var(--accent); cursor: pointer;
+  transition: background 0.15s;
+}
+.card .find-org-btn:hover { background: var(--surface-hover); }
+.card .find-providers-btn {
+  font-size: 9px; padding: 3px 12px; border: none; border-radius: 3px;
+  background: var(--org-accent-dim); color: var(--org-accent); cursor: pointer;
+}
+.humana-badge {
+  display: inline-block; font-size: 7px; font-weight: bold;
+  padding: 2px 8px; border-radius: 3px;
+  background: var(--humana); color: #fff;
+}
+.no-org-text { font-size: 9px; color: var(--text-dim); font-style: italic; }
+.extra-orgs-toggle {
+  font-size: 8px; color: var(--accent); cursor: pointer; text-decoration: underline;
+}
+.extra-orgs { display: none; margin-top: 4px; }
+.extra-orgs.show { display: block; }
+
+.notes-overlay {
+  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5); z-index: 100; align-items: center; justify-content: center;
+}
+.notes-overlay.show { display: flex; }
+.notes-box {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 20px; max-width: 500px; width: 90%;
+}
+.notes-box h3 { font-size: 12px; margin-bottom: 10px; }
+.notes-box p { font-size: 10px; color: var(--text-secondary); margin-bottom: 10px; line-height: 1.5; }
+.notes-box .disclaimer {
+  background: var(--surface-alt); border-radius: 4px; padding: 10px;
+  margin: 10px 0;
+}
+.notes-box .disclaimer h4 { font-size: 10px; color: var(--warning); margin-bottom: 6px; }
+.notes-box .disclaimer p { font-size: 9px; }
+.notes-box .copyright { font-size: 8px; color: var(--text-dim); text-align: center; margin-top: 12px; }
+.loading { display: inline-block; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.error-msg { color: var(--warning); font-size: 10px; text-align: center; padding: 20px; }
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="header-inner">
+    <h1>NPI Lookup</h1>
+    <span class="subtitle">NPPES Registry</span>
+    <span class="ver-badge">v2.5</span>
+    <div class="header-right">
+      <button class="btn btn-surface" onclick="showNotes()">Notes</button>
+      <button class="btn btn-surface" id="themeBtn" onclick="toggleTheme()">☀ Light</button>
+    </div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="search-outer">
+    <div class="mode-row">
+      <span class="mode-label">SEARCH TYPE</span>
+      <button class="mode-btn active" id="modeIndividual" onclick="setMode('individual')">Individual Provider</button>
+      <button class="mode-btn" id="modeOrg" onclick="setMode('organization')">Organization</button>
+    </div>
+    <div class="search-grid" id="searchFields">
+      <div class="field" id="firstNameField"><label>First Name</label><input id="firstName" /></div>
+      <div class="field" id="lastNameField"><label>Last Name</label><input id="lastName" /></div>
+      <div class="field" id="orgNameField" style="display:none"><label>Organization Name</label><input id="orgName" /></div>
+      <div class="field"><label>City</label><input id="city" /></div>
+      <div class="field"><label>State</label>
+        <select id="state">
+          <option value=""></option>
+          <option>AL</option><option>AK</option><option>AZ</option><option>AR</option><option>CA</option>
+          <option>CO</option><option>CT</option><option>DE</option><option>FL</option><option>GA</option>
+          <option>HI</option><option>ID</option><option>IL</option><option>IN</option><option>IA</option>
+          <option>KS</option><option>KY</option><option>LA</option><option>ME</option><option>MD</option>
+          <option>MA</option><option>MI</option><option>MN</option><option>MS</option><option>MO</option>
+          <option>MT</option><option>NE</option><option>NV</option><option>NH</option><option>NJ</option>
+          <option>NM</option><option>NY</option><option>NC</option><option>ND</option><option>OH</option>
+          <option>OK</option><option>OR</option><option>PA</option><option>RI</option><option>SC</option>
+          <option>SD</option><option>TN</option><option>TX</option><option>UT</option><option>VT</option>
+          <option>VA</option><option>WA</option><option>WV</option><option>WI</option><option>WY</option>
+          <option>DC</option>
+        </select>
+      </div>
+      <div class="field"><label>Zip Code</label><input id="zipCode" maxlength="10" /></div>
+      <div class="field"><label>Radius (mi)</label>
+        <select id="radius">
+          <option>5</option><option>10</option><option selected>25</option><option>50</option><option>100</option><option>200</option>
+        </select>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-accent" id="searchBtn" onclick="onSearch()">Search</button>
+      <button class="btn btn-surface" onclick="onClear()">Clear</button>
+      <button class="btn btn-success" id="exportBtn" onclick="onExport()" disabled>Export to Excel</button>
+    </div>
+  </div>
+
+  <div class="results-header">
+    <span class="status-text" id="statusText">Enter a name and location to search.</span>
+  </div>
+  <div class="results-area" id="resultsArea"></div>
+</div>
+
+<div class="notes-overlay" id="notesOverlay">
+  <div class="notes-box">
+    <h3>NPI Lookup Tool</h3>
+    <p>This tool searches the NPPES National Provider Identifier (NPI) Registry maintained by CMS (Centers for Medicare &amp; Medicaid Services) to look up healthcare providers and organizations.</p>
+    <p>Features include individual provider and organization searches, automatic organization enrichment via reverse address lookup, Humana network verification, and export to Excel/CSV.</p>
+    <div class="disclaimer">
+      <h4>Important Disclaimer</h4>
+      <p>This tool is provided for informational purposes only. Do not rely solely on this program for critical decisions. Always verify provider information, network status, and NPI data with official sources such as the CMS NPPES website (npiregistry.cms.hhs.gov) and your insurance carrier's official provider directory.</p>
+    </div>
+    <p class="copyright">© Justin Naquin. All rights reserved.</p>
+    <div style="text-align:center;margin-top:10px">
+      <button class="btn btn-accent" onclick="hideNotes()">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Constants ──
+const API_URL = 'https://npiregistry.cms.hhs.gov/api/';
+const API_VERSION = '2.1';
+// CORS proxy — replace YOUR-SUBDOMAIN with your actual Cloudflare Workers subdomain
+// Get this URL after deploying the Worker in the humana-proxy folder
+const HUMANA_FHIR_BASE = 'https://humana-fhir-proxy.npilookuptool.workers.dev';
+const AUTO_ENRICH_LIMIT = 5;
+
+let currentMode = 'individual';
+let currentResults = [];
+let isDark = true;
+
+// ── Theme ──
+function toggleTheme() {
+  isDark = !isDark;
+  document.body.classList.toggle('light-mode', !isDark);
+  document.getElementById('themeBtn').textContent = isDark ? '☀ Light' : '☾ Dark';
+}
+
+// ── Notes ──
+function showNotes() { document.getElementById('notesOverlay').classList.add('show'); }
+function hideNotes() { document.getElementById('notesOverlay').classList.remove('show'); }
+
+// ── Mode ──
+function setMode(mode) {
+  currentMode = mode;
+  document.getElementById('modeIndividual').classList.toggle('active', mode === 'individual');
+  document.getElementById('modeOrg').classList.toggle('active', mode === 'organization');
+  document.getElementById('firstNameField').style.display = mode === 'individual' ? '' : 'none';
+  document.getElementById('lastNameField').style.display = mode === 'individual' ? '' : 'none';
+  document.getElementById('orgNameField').style.display = mode === 'organization' ? '' : 'none';
+}
+
+// ── Zip Lookup ──
+async function zipToCityState(zip) {
+  try {
+    const resp = await fetch(`https://api.zippopotam.us/us/${zip}`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (data.places && data.places.length > 0) {
+      return { city: data.places[0]['place name'], state: data.places[0]['state abbreviation'] };
+    }
+  } catch (e) {}
+  return null;
+}
+
+// ── NPPES Search ──
+async function searchNPI(lastName, firstName, city, state, zipCode, radius, limit = 50) {
+  const params = new URLSearchParams({
+    version: API_VERSION, enumeration_type: 'NPI-1', limit: limit
+  });
+  if (lastName) params.set('last_name', lastName);
+  if (firstName) params.set('first_name', firstName);
+  if (city) params.set('city', city);
+  if (state) params.set('state', state);
+  if (zipCode) { params.set('postal_code', zipCode); if (radius) params.set('radius', radius); }
+  const resp = await fetch(API_URL + '?' + params.toString());
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  const data = await resp.json();
+  if (typeof data === 'string' && data.startsWith('Error')) throw new Error(data);
+  return data;
+}
+
+async function searchOrgNPI(orgName, state, city, limit = 5) {
+  const params = new URLSearchParams({
+    version: API_VERSION, enumeration_type: 'NPI-2', limit: limit
+  });
+  if (orgName) params.set('organization_name', orgName);
+  if (state) params.set('state', state);
+  if (city) params.set('city', city);
+  const resp = await fetch(API_URL + '?' + params.toString());
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return await resp.json();
+}
+
+async function searchOrgNPIMain(orgName, city, state, zipCode, limit = 50) {
+  const params = new URLSearchParams({
+    version: API_VERSION, enumeration_type: 'NPI-2', limit: limit
+  });
+  if (orgName) params.set('organization_name', orgName);
+  if (city) params.set('city', city);
+  if (state) params.set('state', state);
+  if (zipCode) params.set('postal_code', zipCode);
+  const resp = await fetch(API_URL + '?' + params.toString());
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  const data = await resp.json();
+  if (typeof data === 'string' && data.startsWith('Error')) throw new Error(data);
+  return data;
+}
+
+async function searchProvidersByLocation(city, state, zipCode, limit = 50) {
+  const params = new URLSearchParams({
+    version: API_VERSION, enumeration_type: 'NPI-1', limit: limit
+  });
+  if (city) params.set('city', city);
+  if (state) params.set('state', state);
+  if (zipCode) params.set('postal_code', zipCode);
+  const resp = await fetch(API_URL + '?' + params.toString());
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  const data = await resp.json();
+  if (typeof data === 'string' && data.startsWith('Error')) throw new Error(data);
+  return data;
+}
+
+async function searchOrgsByLocation(city, state, zipCode, limit = 50) {
+  const params = new URLSearchParams({
+    version: API_VERSION, enumeration_type: 'NPI-2', limit: limit
+  });
+  if (city) params.set('city', city);
+  if (state) params.set('state', state);
+  if (zipCode) params.set('postal_code', zipCode);
+  const resp = await fetch(API_URL + '?' + params.toString());
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  const data = await resp.json();
+  if (typeof data === 'string' && data.startsWith('Error')) throw new Error(data);
+  return data;
+}
+
+// ── Humana Medicare Advantage Network Check (v2.6 — two-step FHIR lookup) ──
+async function checkHumanaNetwork(npi) {
+  /*
+   * Check if a provider participates in Humana's Medicare Advantage network.
+   *
+   * Two-step approach (fast, indexed):
+   *   Step 1 — GET /Practitioner?identifier=http://hl7.org/fhir/sid/us-npi|{NPI}
+   *             → resolves the provider's internal Humana FHIR ID
+   *   Step 2 — GET /PractitionerRole?practitioner=Practitioner/{id}
+   *             → returns all network participations for that provider
+   *             → filter for any network name containing "Medicare"
+   *
+   * Why not the chained search (practitioner.identifier)?
+   * PractitionerRole has 23M records. The chained search scans all of them
+   * and consistently hits the 30-second Worker timeout. The two-step approach
+   * uses indexed lookups at both steps and completes in ~2-4 seconds.
+   */
+  try {
+    // ── Step 1: Resolve NPI → internal Humana FHIR Practitioner ID ──
+    const practUrl = `${HUMANA_FHIR_BASE}/Practitioner?identifier=${encodeURIComponent('http://hl7.org/fhir/sid/us-npi|' + npi)}&_count=1&_format=json`;
+    const ctrl1 = new AbortController();
+    const t1 = setTimeout(() => ctrl1.abort(), 12000);
+
+    const practResp = await fetch(practUrl, {
+      headers: { 'Accept': 'application/fhir+json, application/json' },
+      signal: ctrl1.signal
+    });
+    clearTimeout(t1);
+
+    if (!practResp.ok) return false;
+    const practData = await practResp.json();
+    if (!practData.entry || practData.entry.length === 0) return false;
+
+    const fhirId = practData.entry[0].resource.id;
+    if (!fhirId) return false;
+
+    // ── Step 2: Get network participation via PractitionerRole ──
+    const roleUrl = `${HUMANA_FHIR_BASE}/PractitionerRole?practitioner=Practitioner/${fhirId}&_count=50&_format=json`;
+    const ctrl2 = new AbortController();
+    const t2 = setTimeout(() => ctrl2.abort(), 12000);
+
+    const roleResp = await fetch(roleUrl, {
+      headers: { 'Accept': 'application/fhir+json, application/json' },
+      signal: ctrl2.signal
+    });
+    clearTimeout(t2);
+
+    if (!roleResp.ok) return false;
+    const roleData = await roleResp.json();
+    if (!roleData.entry || roleData.entry.length === 0) return false;
+
+    // ── Filter for Medicare Advantage networks ──
+    const hasMedicare = roleData.entry.some(e => {
+      const ext = (e.resource.extension || []).find(x =>
+        x.url && x.url.includes('network-reference')
+      );
+      return ext && ext.valueReference && /medicare/i.test(ext.valueReference.display);
+    });
+
+    return hasMedicare;
+
+  } catch (e) {
+    return false;
+  }
+}
+
+// ── Address Matching ──
+function addressMatches(orgAddr, provAddr) {
+  if (!orgAddr || !provAddr) return false;
+  function normalize(s) {
+    return s.toUpperCase().replace(/[^A-Z0-9 ]/g, '').trim();
+  }
+  const orgTokens = normalize(orgAddr).split(/\s+/).filter(t => !t.match(/^\d+$/) || t.length > 2);
+  const provTokens = normalize(provAddr).split(/\s+/);
+  if (orgTokens.length < 1) return false;
+  return orgTokens.every(t => provTokens.includes(t));
+}
+
+// ── Find Org at Address ──
+async function findOrgAtAddress(addressLine, city, state, zipCode) {
+  try {
+    const data = await searchOrgsByLocation(city, state, zipCode);
+    if (!data.results) return [];
+    const results = [];
+    for (const r of data.results) {
+      const parsed = parseOrgResult(r);
+      if (addressMatches(parsed.address_line, addressLine)) {
+        results.push(parsed);
+      }
+    }
+    return results;
+  } catch (e) { return []; }
+}
+
+// ── Parse Provider ──
+function parseProvider(result) {
+  const basic = result.basic || {};
+  const addresses = result.addresses || [];
+  const taxonomies = result.taxonomies || [];
+  let practiceAddr = null, mailingAddr = null;
+  for (const addr of addresses) {
+    if (addr.address_purpose === 'LOCATION') practiceAddr = addr;
+    else if (addr.address_purpose === 'MAILING') mailingAddr = addr;
+  }
+  let primaryTax = null;
+  for (const tax of taxonomies) {
+    if (tax.primary) { primaryTax = tax; break; }
+  }
+  if (!primaryTax && taxonomies.length > 0) primaryTax = taxonomies[0];
+
+  const credential = basic.credential || '';
+  const first = basic.first_name || '';
+  const last = basic.last_name || '';
+  let name = `${first} ${last}`.trim();
+  if (credential) name += `, ${credential}`;
+  const orgName = basic.organization_name || '';
+
+  const addr = practiceAddr || mailingAddr || {};
+  return {
+    npi: result.number || '',
+    name: name,
+    specialty: primaryTax ? (primaryTax.desc || 'N/A') : 'N/A',
+    taxonomy_code: primaryTax ? (primaryTax.code || '') : '',
+    address_line: addr.address_1 || '',
+    address_line_2: addr.address_2 || '',
+    city: addr.city || '',
+    state: addr.state || '',
+    zip: (addr.postal_code || '').substring(0, 5),
+    phone: addr.telephone_number || '',
+    org_name: orgName,
+    enumeration_type: 'NPI-1',
+    is_org: false
+  };
+}
+
+// ── Parse Org Result ──
+function parseOrgResult(result) {
+  const basic = result.basic || {};
+  const addresses = result.addresses || [];
+  const taxonomies = result.taxonomies || [];
+  let practiceAddr = null, mailingAddr = null;
+  for (const addr of addresses) {
+    if (addr.address_purpose === 'LOCATION') practiceAddr = addr;
+    else if (addr.address_purpose === 'MAILING') mailingAddr = addr;
+  }
+  let primaryTax = null;
+  for (const tax of taxonomies) {
+    if (tax.primary) { primaryTax = tax; break; }
+  }
+  if (!primaryTax && taxonomies.length > 0) primaryTax = taxonomies[0];
+
+  const orgName = basic.organization_name || '';
+  const addr = practiceAddr || mailingAddr || {};
+  return {
+    npi: result.number || '',
+    name: orgName,
+    org_name: orgName,
+    specialty: primaryTax ? (primaryTax.desc || 'N/A') : 'N/A',
+    taxonomy_code: primaryTax ? (primaryTax.code || '') : '',
+    address_line: addr.address_1 || '',
+    address_line_2: addr.address_2 || '',
+    city: addr.city || '',
+    state: addr.state || '',
+    zip: (addr.postal_code || '').substring(0, 5),
+    phone: addr.telephone_number || '',
+    enumeration_type: 'NPI-2',
+    is_org: true
+  };
+}
+
+// ── Search Handler ──
+async function onSearch() {
+  const city = document.getElementById('city').value.trim();
+  const state = document.getElementById('state').value.trim();
+  const zipCode = document.getElementById('zipCode').value.trim();
+  const radius = document.getElementById('radius').value;
+
+  if (currentMode === 'individual') {
+    const last = document.getElementById('lastName').value.trim();
+    const first = document.getElementById('firstName').value.trim();
+    if (!last) { alert('Please enter at least a Last Name to search for an individual provider.'); return; }
+    setSearching(true);
+    setStatus('Searching NPPES Registry...');
+    try {
+      // Auto-resolve zip to city/state if needed
+      let searchCity = city, searchState = state;
+      if (zipCode && !city && !state) {
+        const resolved = await zipToCityState(zipCode);
+        if (resolved) { searchCity = resolved.city; searchState = resolved.state; }
+      }
+
+      const data = await searchNPI(last, first, searchCity, searchState, zipCode, radius);
+      if (!data.results || data.result_count === 0) {
+        displayResults([]);
+        return;
+      }
+
+      const providers = [];
+      const seenNpis = new Set();
+      for (const r of data.results) {
+        const prov = parseProvider(r);
+        if (seenNpis.has(prov.npi)) continue;
+        seenNpis.add(prov.npi);
+        prov.org_enriched = false;
+        providers.push(prov);
+      }
+
+      // Enrich with org info (first N)
+      setStatus(`Enriching results... (${Math.min(providers.length, AUTO_ENRICH_LIMIT)} providers)`);
+      for (let i = 0; i < Math.min(providers.length, AUTO_ENRICH_LIMIT); i++) {
+        const prov = providers[i];
+        try {
+          const orgsAtAddr = await findOrgAtAddress(
+            prov.address_line, prov.city, prov.state, prov.zip
+          );
+          if (orgsAtAddr.length > 0) {
+            const bestOrg = orgsAtAddr[0];
+            prov.org_enriched = true;
+            prov.org_full_name = bestOrg.name;
+            prov.org_npi = bestOrg.npi;
+            prov.org_match_method = 'address';
+            prov.orgs_at_address = orgsAtAddr;
+
+            // Check if org name from NPPES matches
+            if (prov.org_name) {
+              const orgBasic = prov.org_name.toLowerCase();
+              const orgResult = bestOrg.name.toLowerCase();
+              if (orgResult !== 'none' && !orgBasic.includes(orgResult.split(' ')[0]) && !orgResult.includes(orgBasic.split(' ')[0])) {
+                prov.name_unmatched = true;
+              }
+            }
+          }
+        } catch (e) {}
+      }
+
+      // Check Humana network
+      setStatus('Checking Humana network...');
+      for (const prov of providers) {
+        try {
+          prov.humana_found = await checkHumanaNetwork(prov.npi);
+        } catch (e) {
+          prov.humana_found = false;
+        }
+      }
+
+      displayResults(providers);
+    } catch (e) {
+      showError(e.message);
+    } finally {
+      setSearching(false);
+    }
+  } else {
+    // Organization search
+    const orgName = document.getElementById('orgName').value.trim();
+    if (!orgName) { alert('Please enter an Organization Name to search.'); return; }
+    setSearching(true);
+    setStatus('Searching NPPES Registry for organizations...');
+    try {
+      const data = await searchOrgNPIMain(orgName, city, state, zipCode);
+      if (!data.results || data.result_count === 0) { displayResults([]); return; }
+      const orgs = [];
+      for (const r of data.results) {
+        const org = parseOrgResult(r);
+        orgs.push(org);
+      }
+
+      // Check Humana for orgs too
+      setStatus('Checking Humana network...');
+      for (const org of orgs) {
+        try {
+          org.humana_found = await checkHumanaNetwork(org.npi);
+        } catch (e) {
+          org.humana_found = false;
+        }
+      }
+
+      displayResults(orgs);
+    } catch (e) {
+      showError(e.message);
+    } finally {
+      setSearching(false);
+    }
+  }
+}
+
+function setSearching(busy) {
+  document.getElementById('searchBtn').disabled = busy;
+  document.getElementById('searchBtn').textContent = busy ? 'Searching...' : 'Search';
+}
+function setStatus(text) { document.getElementById('statusText').textContent = text; }
+function showError(msg) {
+  document.getElementById('resultsArea').innerHTML = `<div class="error-msg">${msg}</div>`;
+  setStatus('Error');
+}
+
+// ── Display Results ──
+function displayResults(providers) {
+  currentResults = providers;
+  const area = document.getElementById('resultsArea');
+  area.innerHTML = '';
+
+  if (providers.length === 0) {
+    setStatus('No results found matching your search.');
+    area.innerHTML = '<div class="error-msg">No results found. Try broadening your search.</div>';
+    document.getElementById('exportBtn').disabled = true;
+    return;
+  }
+
+  const count = providers.length;
+  const s = count === 1 ? '' : 's';
+  setStatus(`Found ${count} result${s}`);
+  document.getElementById('exportBtn').disabled = false;
+
+  providers.forEach((prov, i) => {
+    area.appendChild(makeCard(prov, i));
+  });
+}
+
+// ── Make Card ──
+function makeCard(prov, index) {
+  const isOrg = prov.is_org || false;
+  const card = document.createElement('div');
+  card.className = 'card';
+
+  const stripe = document.createElement('div');
+  stripe.className = `card-stripe ${isOrg ? 'org' : 'individual'}`;
+  card.appendChild(stripe);
+
+  const body = document.createElement('div');
+  body.className = 'card-body';
+
+  // Top row: name + NPI
+  const top = document.createElement('div');
+  top.className = 'card-top';
+
+  if (isOrg) {
+    const badge = document.createElement('span');
+    badge.className = 'org-badge';
+    badge.textContent = 'ORG';
+    top.appendChild(badge);
+  }
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'name';
+  nameEl.textContent = prov.name || prov.org_name || '';
+  top.appendChild(nameEl);
+
+  const npiRow = document.createElement('span');
+  npiRow.className = 'npi-row';
+  npiRow.innerHTML = `<span class="npi-label">NPI:</span> <span class="npi-value">${prov.npi}</span> `;
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'copy-btn';
+  copyBtn.textContent = 'Copy';
+  copyBtn.onclick = () => { navigator.clipboard.writeText(prov.npi); copyBtn.textContent = 'Copied!'; setTimeout(() => copyBtn.textContent = 'Copy', 1500); };
+  npiRow.appendChild(copyBtn);
+  top.appendChild(npiRow);
+  body.appendChild(top);
+
+  // Specialty
+  if (prov.specialty) {
+    const spec = document.createElement('div');
+    spec.className = 'specialty';
+    spec.textContent = prov.specialty;
+    body.appendChild(spec);
+  }
+
+  // Address
+  const addrParts = [prov.address_line];
+  if (prov.address_line_2) addrParts.push(prov.address_line_2);
+  const cityState = [prov.city, prov.state].filter(Boolean).join(', ') + ' ' + (prov.zip || '');
+  const addrText = addrParts.join(', ') + '  •  ' + cityState.trim();
+  const addrEl = document.createElement('div');
+  addrEl.className = 'address';
+  addrEl.textContent = addrText;
+  body.appendChild(addrEl);
+
+  // Phone
+  if (prov.phone && prov.phone.length >= 10) {
+    const ph = prov.phone.replace(/\D/g, '');
+    const formatted = `(${ph.substring(0,3)}) ${ph.substring(3,6)}-${ph.substring(6,10)}`;
+    const phoneEl = document.createElement('div');
+    phoneEl.className = 'phone';
+    phoneEl.textContent = formatted;
+    body.appendChild(phoneEl);
+  }
+
+  // Org Info (for individual providers)
+  if (!isOrg) {
+    if (prov.org_enriched && prov.org_full_name) {
+      const orgInfo = document.createElement('div');
+      orgInfo.className = 'org-info';
+
+      const orgRow = document.createElement('div');
+      orgRow.className = 'org-row';
+      orgRow.innerHTML = `
+        <span class="org-label-text">Org:</span>
+        <span class="org-name-text">${escapeHtml(prov.org_full_name)}</span>
+        <span class="org-npi-text">NPI: ${prov.org_npi || ''}</span>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText('${prov.org_npi || ''}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)">Copy</button>
+      `;
+      orgInfo.appendChild(orgRow);
+
+      if (prov.org_match_method === 'address') {
+        const method = document.createElement('div');
+        method.className = 'match-method';
+        method.textContent = 'Matched by address';
+        orgInfo.appendChild(method);
+      }
+
+      // Extra orgs at address
+      if (prov.orgs_at_address && prov.orgs_at_address.length > 1) {
+        const extraCount = prov.orgs_at_address.length - 1;
+        const toggleId = `extra-${index}`;
+        const toggle = document.createElement('span');
+        toggle.className = 'extra-orgs-toggle';
+        toggle.textContent = `▶ +${extraCount} more org(s) at this address`;
+        toggle.onclick = () => {
+          const el = document.getElementById(toggleId);
+          el.classList.toggle('show');
+          toggle.textContent = el.classList.contains('show')
+            ? `▼ +${extraCount} more org(s) at this address`
+            : `▶ +${extraCount} more org(s) at this address`;
+        };
+        orgInfo.appendChild(toggle);
+
+        const extraDiv = document.createElement('div');
+        extraDiv.id = toggleId;
+        extraDiv.className = 'extra-orgs';
+        prov.orgs_at_address.slice(1).forEach(eo => {
+          const row = document.createElement('div');
+          row.className = 'org-row';
+          row.style.marginTop = '4px';
+          row.innerHTML = `<span class="org-name-text">${escapeHtml(eo.name || 'Unknown')}</span> <span class="org-npi-text">NPI: ${eo.npi}</span>`;
+          extraDiv.appendChild(row);
+        });
+        orgInfo.appendChild(extraDiv);
+      }
+
+      body.appendChild(orgInfo);
+
+      // Find Providers at Org button
+      const fpBtn = document.createElement('button');
+      fpBtn.className = 'find-providers-btn';
+      fpBtn.textContent = 'Find Providers at this Org →';
+      fpBtn.style.marginTop = '6px';
+      fpBtn.onclick = () => findProvidersAtOrg(prov);
+      body.appendChild(fpBtn);
+
+    } else if (prov.org_enriched === false) {
+      // Show "Find Organization" button for unenriched cards
+      const findOrgBtn = document.createElement('button');
+      findOrgBtn.className = 'find-org-btn';
+      findOrgBtn.textContent = 'Find Organization →';
+      findOrgBtn.style.marginTop = '8px';
+      findOrgBtn.onclick = async () => {
+        findOrgBtn.textContent = 'Looking up...';
+        findOrgBtn.disabled = true;
+        try {
+          const orgs = await findOrgAtAddress(prov.address_line, prov.city, prov.state, prov.zip);
+          if (orgs.length > 0) {
+            prov.org_enriched = true;
+            prov.org_full_name = orgs[0].name;
+            prov.org_npi = orgs[0].npi;
+            prov.org_match_method = 'address';
+            prov.orgs_at_address = orgs;
+          } else {
+            prov.org_enriched = true;
+            prov.org_full_name = '';
+          }
+          // Re-render just this card
+          const area = document.getElementById('resultsArea');
+          const cards = area.children;
+          if (cards[index]) {
+            cards[index].replaceWith(makeCard(prov, index));
+          }
+        } catch (e) {
+          findOrgBtn.textContent = 'Error - Try Again';
+          findOrgBtn.disabled = false;
+        }
+      };
+      body.appendChild(findOrgBtn);
+    } else if (prov.org_enriched && !prov.org_full_name) {
+      const noOrg = document.createElement('div');
+      noOrg.className = 'no-org-text';
+      noOrg.textContent = 'No organization found at this address';
+      noOrg.style.marginTop = '8px';
+      body.appendChild(noOrg);
+    }
+  }
+
+  // Humana Badge
+  if (prov.humana_found) {
+    const sep = document.createElement('div');
+    sep.style.height = '1px';
+    sep.style.background = 'var(--separator)';
+    sep.style.margin = '8px 0 6px';
+    body.appendChild(sep);
+
+    const badge = document.createElement('span');
+    badge.className = 'humana-badge';
+    badge.textContent = '  Humana Medicare  ';
+    body.appendChild(badge);
+  }
+
+  card.appendChild(body);
+  return card;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ── Find Providers at Org ──
+async function findProvidersAtOrg(orgProv) {
+  setSearching(true);
+  setStatus(`Finding providers at "${orgProv.org_full_name || orgProv.name}"...`);
+  try {
+    const data = await searchProvidersByLocation(orgProv.city, orgProv.state, orgProv.zip);
+    if (!data.results) { setStatus('No providers found at this address.'); setSearching(false); return; }
+
+    const providers = [];
+    for (const r of data.results) {
+      const p = parseProvider(r);
+      if (addressMatches(orgProv.address_line, p.address_line)) {
+        p.org_enriched = true;
+        p.org_full_name = orgProv.org_full_name || orgProv.name;
+        p.org_npi = orgProv.org_npi || orgProv.npi;
+        p.org_match_method = 'address';
+        providers.push(p);
+      }
+    }
+
+    // Check Humana for these providers
+    setStatus('Checking Humana network...');
+    for (const prov of providers) {
+      try { prov.humana_found = await checkHumanaNetwork(prov.npi); } catch (e) { prov.humana_found = false; }
+    }
+
+    if (providers.length === 0) {
+      setStatus('No providers found at this exact address.');
+      return;
+    }
+
+    displayResults(providers);
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    setSearching(false);
+  }
+}
+
+// ── Clear ──
+function onClear() {
+  document.getElementById('firstName').value = '';
+  document.getElementById('lastName').value = '';
+  document.getElementById('orgName').value = '';
+  document.getElementById('city').value = '';
+  document.getElementById('state').value = '';
+  document.getElementById('zipCode').value = '';
+  document.getElementById('radius').value = '25';
+  document.getElementById('resultsArea').innerHTML = '';
+  setStatus('Enter a name and location to search.');
+  document.getElementById('exportBtn').disabled = true;
+  currentResults = [];
+}
+
+// ── Export to CSV ──
+function onExport() {
+  if (!currentResults.length) return;
+  const isOrgResults = currentResults[0]?.is_org;
+  let headers, rows;
+  if (isOrgResults) {
+    headers = ['NPI', 'Organization Name', 'Specialty', 'Address', 'City', 'State', 'Zip', 'Phone', 'Humana Network'];
+    rows = currentResults.map(p => [
+      p.npi, p.name, p.specialty,
+      [p.address_line, p.address_line_2].filter(Boolean).join(', '),
+      p.city, p.state, p.zip, p.phone, p.humana_found ? 'Yes' : 'No'
+    ]);
+  } else {
+    headers = ['NPI', 'Provider Name', 'Specialty', 'Organization', 'Address', 'City', 'State', 'Zip', 'Phone', 'Humana Network'];
+    rows = currentResults.map(p => [
+      p.npi, p.name, p.specialty, p.org_full_name || p.org_name || '',
+      [p.address_line, p.address_line_2].filter(Boolean).join(', '),
+      p.city, p.state, p.zip, p.phone, p.humana_found ? 'Yes' : 'No'
+    ]);
+  }
+
+  const csvContent = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const now = new Date();
+  const ts = now.getFullYear().toString() + String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0') + '_' + String(now.getHours()).padStart(2,'0') + String(now.getMinutes()).padStart(2,'0') + String(now.getSeconds()).padStart(2,'0');
+  a.href = url;
+  a.download = `npi_results_${ts}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  setStatus(`Exported ${currentResults.length} results.`);
+}
+
+// ── Keyboard shortcut ──
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter') onSearch();
+});
+</script>
+</body>
+</html>

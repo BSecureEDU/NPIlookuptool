@@ -414,48 +414,70 @@ async function searchOrgsByLocation(city, state, zipCode, limit = 50) {
   return data;
 }
 
-// ── Humana Network Check (FIXED) ──
+// ── Humana Medicare Advantage Network Check (v2.6 — two-step FHIR lookup) ──
 async function checkHumanaNetwork(npi) {
   /*
-   * Check if a provider (by NPI) exists in Humana's provider directory.
-   * Uses Humana's public FHIR Provider Directory API.
+   * Check if a provider participates in Humana's Medicare Advantage network.
    *
-   * FIX v2.5: Added Accept header, check for 'entry' array (not just 'total'),
-   * increased timeout, and added the bare NPI format as a third fallback.
+   * Two-step approach (fast, indexed):
+   *   Step 1 — GET /Practitioner?identifier=http://hl7.org/fhir/sid/us-npi|{NPI}
+   *             → resolves the provider's internal Humana FHIR ID
+   *   Step 2 — GET /PractitionerRole?practitioner=Practitioner/{id}
+   *             → returns all network participations for that provider
+   *             → filter for any network name containing "Medicare"
+   *
+   * Why not the chained search (practitioner.identifier)?
+   * PractitionerRole has 23M records. The chained search scans all of them
+   * and consistently hits the 30-second Worker timeout. The two-step approach
+   * uses indexed lookups at both steps and completes in ~2-4 seconds.
    */
-  const identifierFormats = [
-    `http://hl7.org/fhir/sid/us-npi|${npi}`,
-    `NPI|${npi}`,
-    npi  // bare NPI as final fallback
-  ];
+  try {
+    // ── Step 1: Resolve NPI → internal Humana FHIR Practitioner ID ──
+    const practUrl = `${HUMANA_FHIR_BASE}/Practitioner?identifier=${encodeURIComponent('http://hl7.org/fhir/sid/us-npi|' + npi)}&_count=1&_format=json`;
+    const ctrl1 = new AbortController();
+    const t1 = setTimeout(() => ctrl1.abort(), 12000);
 
-  for (const identifier of identifierFormats) {
-    try {
-      const url = `${HUMANA_FHIR_BASE}/Practitioner?identifier=${encodeURIComponent(identifier)}&_count=1&_format=json`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
+    const practResp = await fetch(practUrl, {
+      headers: { 'Accept': 'application/fhir+json, application/json' },
+      signal: ctrl1.signal
+    });
+    clearTimeout(t1);
 
-      const resp = await fetch(url, {
-        headers: { 'Accept': 'application/fhir+json, application/json' },
-        signal: controller.signal
-      });
-      clearTimeout(timeout);
+    if (!practResp.ok) return false;
+    const practData = await practResp.json();
+    if (!practData.entry || practData.entry.length === 0) return false;
 
-      if (!resp.ok) continue;
+    const fhirId = practData.entry[0].resource.id;
+    if (!fhirId) return false;
 
-      const data = await resp.json();
+    // ── Step 2: Get network participation via PractitionerRole ──
+    const roleUrl = `${HUMANA_FHIR_BASE}/PractitionerRole?practitioner=Practitioner/${fhirId}&_count=50&_format=json`;
+    const ctrl2 = new AbortController();
+    const t2 = setTimeout(() => ctrl2.abort(), 12000);
 
-      // Check BOTH total field AND entry array — some FHIR servers omit total
-      const total = data.total || 0;
-      if (total > 0) return true;
-      if (data.entry && data.entry.length > 0) return true;
+    const roleResp = await fetch(roleUrl, {
+      headers: { 'Accept': 'application/fhir+json, application/json' },
+      signal: ctrl2.signal
+    });
+    clearTimeout(t2);
 
-    } catch (e) {
-      // Timeout or network error — try next format
-      continue;
-    }
+    if (!roleResp.ok) return false;
+    const roleData = await roleResp.json();
+    if (!roleData.entry || roleData.entry.length === 0) return false;
+
+    // ── Filter for Medicare Advantage networks ──
+    const hasMedicare = roleData.entry.some(e => {
+      const ext = (e.resource.extension || []).find(x =>
+        x.url && x.url.includes('network-reference')
+      );
+      return ext && ext.valueReference && /medicare/i.test(ext.valueReference.display);
+    });
+
+    return hasMedicare;
+
+  } catch (e) {
+    return false;
   }
-  return false;
 }
 
 // ── Address Matching ──
@@ -892,7 +914,7 @@ function makeCard(prov, index) {
 
     const badge = document.createElement('span');
     badge.className = 'humana-badge';
-    badge.textContent = '  Humana  ';
+    badge.textContent = '  Humana Medicare  ';
     body.appendChild(badge);
   }
 

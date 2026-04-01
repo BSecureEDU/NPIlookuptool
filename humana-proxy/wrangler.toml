@@ -1,0 +1,8 @@
+# Cloudflare Wrangler config — tells Cloudflare how to deploy your Worker
+# You'll fill in the account_id after you create your Cloudflare account
+
+name = "humana-fhir-proxy"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+# No special bindings needed — this Worker just proxies HTTP requests

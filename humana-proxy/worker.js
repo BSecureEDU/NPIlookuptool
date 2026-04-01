@@ -57,13 +57,18 @@ export default {
     const targetUrl = targetBase + strippedPath + url.search;
 
     try {
-      // Build upstream headers — POST requests forward Content-Type
+      // Build upstream headers
       const upstreamHeaders = {
         'Accept': 'application/fhir+json, application/json',
-        'User-Agent': 'NPI-Lookup-Tool/2.7',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       };
       if (request.method === 'POST') {
         upstreamHeaders['Content-Type'] = request.headers.get('Content-Type') || 'application/json';
+      }
+      // Finder API requires requests to appear as if they come from the finder portal
+      if (targetBase.includes('finder.humana.com')) {
+        upstreamHeaders['Origin'] = 'https://finder.humana.com';
+        upstreamHeaders['Referer'] = 'https://finder.humana.com/finder/medical/results';
       }
 
       const response = await fetch(targetUrl, {

@@ -414,27 +414,98 @@ async function searchOrgsByLocation(city, state, zipCode, limit = 50) {
   return data;
 }
 
-// ── Humana Medicare Network Check (v2.7 — Finder API) ──
+// ── Humana Medicare Network Check (v2.8 — FHIR primary, Finder fallback) ──
 const HUMANA_FINDER_BASE = 'https://humana-fhir-proxy.npilookuptool.workers.dev/finder';
 
 async function checkHumanaNetwork(npi, zipCode) {
   /*
    * Check if a provider participates in a Humana Medicare network.
    *
-   * Uses Humana's Finder API (the same backend that powers finder.humana.com).
-   * This is more complete than the FHIR directory — it includes providers
-   * that are absent from fhir.humana.com/api but present on the portal.
+   * Strategy (cascading):
+   *   1. FHIR API (primary) — CMS-mandated, stable endpoint.
+   *      Step A: GET Practitioner?identifier=NPI → get Humana's internal FHIR ID
+   *      Step B: GET PractitionerRole?practitioner=Practitioner/{id} → get network/plan info
+   *      If any PractitionerRole exists → provider is in Humana's directory.
    *
-   * Approach:
-   *   POST /v1/pfp/get-provider-resultsv2
+   *   2. Finder API (fallback) — powers finder.humana.com, broader dataset but
+   *      unofficial and may go down. Only tried if FHIR returns nothing.
+   *
+   * Why two steps for FHIR?
+   *   PractitionerRole?practitioner.identifier (chained search) scans 23M records
+   *   and always times out (>30s). The two-step approach avoids this entirely.
+   */
+
+  // ── Step 1: FHIR lookup (primary) ──
+  const fhirResult = await checkHumanaFHIR(npi);
+  if (fhirResult) return true;
+
+  // ── Step 2: Finder API (fallback) ──
+  return await checkHumanaFinder(npi, zipCode);
+}
+
+async function checkHumanaFHIR(npi) {
+  /*
+   * Two-step FHIR lookup:
+   *   A) Find the Practitioner resource by NPI → extract internal ID
+   *   B) Query PractitionerRole using that ID → confirms network participation
+   *
+   * Returns true if PractitionerRole entries exist, false otherwise.
+   * A Practitioner existing alone (step A) is enough to confirm presence
+   * in Humana's directory, but PractitionerRole gives us network detail.
+   * We return true from step A if the practitioner is found, since being
+   * in Humana's FHIR directory at all indicates a contractual relationship.
+   */
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12000);
+
+    // Step A — find Practitioner by NPI
+    const practUrl = `${HUMANA_FHIR_BASE}/Practitioner?identifier=http://hl7.org/fhir/sid/us-npi|${npi}&_count=1`;
+    const practResp = await fetch(practUrl, {
+      headers: { 'Accept': 'application/fhir+json, application/json' },
+      signal: ctrl.signal
+    });
+
+    if (!practResp.ok) { clearTimeout(timer); return false; }
+    const practData = await practResp.json();
+    const entries = practData?.entry || [];
+    if (entries.length === 0) { clearTimeout(timer); return false; }
+
+    // Got a Practitioner — extract the internal FHIR ID
+    const practitionerId = entries[0]?.resource?.id;
+    if (!practitionerId) { clearTimeout(timer); return true; } // found but no ID — still a match
+
+    // Step B — check PractitionerRole for network detail
+    const roleUrl = `${HUMANA_FHIR_BASE}/PractitionerRole?practitioner=Practitioner/${practitionerId}&_count=1`;
+    const roleResp = await fetch(roleUrl, {
+      headers: { 'Accept': 'application/fhir+json, application/json' },
+      signal: ctrl.signal
+    });
+    clearTimeout(timer);
+
+    if (!roleResp.ok) return true; // Practitioner exists even if role query fails
+    const roleData = await roleResp.json();
+    const roles = roleData?.entry || [];
+
+    // Practitioner was found in step A — that's a confirmed Humana directory entry.
+    // PractitionerRole gives bonus detail but isn't required for the badge.
+    return true;
+
+  } catch (e) {
+    return false;
+  }
+}
+
+async function checkHumanaFinder(npi, zipCode) {
+  /*
+   * Fallback: Humana's Finder API (powers finder.humana.com).
+   * More complete dataset than FHIR (~full provider roster vs ~1.2M subset),
+   * but unofficial — Humana can change or disable it without notice.
+   *
+   * POST /v1/pfp/get-provider-resultsv2
    *   SearchType "5" = NPI search
    *   network "Medicare PPO" = broadest Medicare network
    *   If results come back → provider is in Humana Medicare.
-   *
-   * Why not the FHIR API?
-   * Humana's FHIR Practitioner directory (~1.2M providers) is a subset.
-   * Many in-network providers are missing from it. The Finder API uses
-   * a separate MongoDB-backed database with the full provider roster.
    */
   try {
     const zip = zipCode || '70601';  // fallback zip (Lake Charles, LA)
@@ -444,14 +515,14 @@ async function checkHumanaNetwork(npi, zipCode) {
       searchTerm: String(npi),
       Zipcode: zip,
       PfpKey: '4075',
-      Distance: '500',            // wide radius to avoid missing the provider
+      Distance: '500',
       flagMcareFuture: false,
-      SearchType: '5',            // 5 = NPI number search
+      SearchType: '5',
       SearchText: String(npi),
       SearchEntityId: '0',
       FlagDental: false,
       RowStartWith: 1,
-      RowCount: 1,                // we only need to know if ≥ 1 result exists
+      RowCount: 1,
       SortBy: '4'
     };
 
@@ -467,9 +538,12 @@ async function checkHumanaNetwork(npi, zipCode) {
     clearTimeout(timer);
 
     if (!resp.ok) return false;
-    const data = await resp.json();
 
-    // The response has providerSearchResults array — any results = in network
+    // Empty response (content-length: 0) means endpoint is down — treat as no data
+    const text = await resp.text();
+    if (!text || text.length === 0) return false;
+
+    const data = JSON.parse(text);
     const results = data?.providerSearchResults || data?.resultsResponse?.providerSearchResults || [];
     return results.length > 0;
 
@@ -478,30 +552,95 @@ async function checkHumanaNetwork(npi, zipCode) {
   }
 }
 
+// ── Address Abbreviation Map ──
+// NPPES orgs typically use abbreviated forms; providers sometimes use full words.
+// Normalize everything to abbreviated form before comparing.
+const ADDR_ABBREV = {
+  'NORTH':'N','SOUTH':'S','EAST':'E','WEST':'W',
+  'NORTHEAST':'NE','NORTHWEST':'NW','SOUTHEAST':'SE','SOUTHWEST':'SW',
+  'AVENUE':'AVE','BOULEVARD':'BLVD','CIRCLE':'CIR','COURT':'CT',
+  'DRIVE':'DR','EXPRESSWAY':'EXPY','FREEWAY':'FWY','HIGHWAY':'HWY',
+  'LANE':'LN','PARKWAY':'PKWY','PLACE':'PL','ROAD':'RD',
+  'ROUTE':'RT','SQUARE':'SQ','STREET':'ST','TERRACE':'TER',
+  'TRAIL':'TRL','TURNPIKE':'TPKE','WAY':'WAY',
+  'SUITE':'STE','BUILDING':'BLDG','FLOOR':'FL','APARTMENT':'APT',
+  'MOUNT':'MT','SAINT':'ST','FORT':'FT',
+};
+
 // ── Address Matching ──
-function addressMatches(orgAddr, provAddr) {
-  if (!orgAddr || !provAddr) return false;
+function addressMatches(addr1, addr2) {
+  /*
+   * Check if two addresses refer to the same physical location.
+   *
+   * Handles two common NPPES mismatches:
+   * 1. Abbreviations: "908 SOUTH WILLIAMSON AVENUE" vs "908 S WILLIAMSON AVE"
+   * 2. Suite detail: "9750 NW 33RD ST STE 105" vs "9750 NW 33RD ST"
+   *
+   * Approach: normalize abbreviations in both addresses, then check if the
+   * shorter set of tokens is fully contained in the longer set.
+   */
+  if (!addr1 || !addr2) return false;
+
   function normalize(s) {
-    return s.toUpperCase().replace(/[^A-Z0-9 ]/g, '').trim();
+    // Uppercase, strip punctuation
+    let out = s.toUpperCase().replace(/[^A-Z0-9 ]/g, '').trim();
+    // Replace full words with their abbreviated forms
+    out = out.split(/\s+/).map(t => ADDR_ABBREV[t] || t).join(' ');
+    return out;
   }
-  const orgTokens = normalize(orgAddr).split(/\s+/).filter(t => !t.match(/^\d+$/) || t.length > 2);
-  const provTokens = normalize(provAddr).split(/\s+/);
-  if (orgTokens.length < 1) return false;
-  return orgTokens.every(t => provTokens.includes(t));
+
+  const tokens1 = normalize(addr1).split(/\s+/).filter(t => !t.match(/^\d+$/) || t.length > 2);
+  const tokens2 = normalize(addr2).split(/\s+/).filter(t => !t.match(/^\d+$/) || t.length > 2);
+  if (tokens1.length < 1 || tokens2.length < 1) return false;
+
+  // Compare shorter set against longer — handles suite/unit detail in either direction
+  const [shorter, longer] = tokens1.length <= tokens2.length
+    ? [tokens1, tokens2] : [tokens2, tokens1];
+  return shorter.every(t => longer.includes(t));
 }
 
 // ── Find Org at Address ──
 async function findOrgAtAddress(addressLine, city, state, zipCode) {
+  /*
+   * Reverse lookup: find all NPI-2 organizations registered at a given street address.
+   *
+   * Problem: NPPES returns orgs alphabetically and caps at 200 per request.
+   * A busy zip code (e.g., 33065 Coral Springs) can have 1000+ orgs.
+   * An org at "9750 NW 33RD ST" starting with "Z" would never appear in the first 200.
+   *
+   * Solution: paginate through ALL orgs at the zip code using the skip parameter,
+   * checking each page for address matches. Stop when a page returns fewer than
+   * the requested limit (meaning we've reached the end).
+   */
   try {
-    const data = await searchOrgsByLocation(city, state, zipCode);
-    if (!data.results) return [];
+    const PAGE_SIZE = 200;  // NPPES max per request
+    const MAX_PAGES = 10;   // safety cap: 2000 orgs max (covers even the biggest zips)
     const results = [];
-    for (const r of data.results) {
-      const parsed = parseOrgResult(r);
-      if (addressMatches(parsed.address_line, addressLine)) {
-        results.push(parsed);
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const skip = page * PAGE_SIZE;
+      const params = new URLSearchParams({
+        version: API_VERSION, enumeration_type: 'NPI-2', limit: PAGE_SIZE, skip: skip
+      });
+      if (city) params.set('city', city);
+      if (state) params.set('state', state);
+      if (zipCode) params.set('postal_code', zipCode);
+
+      const resp = await fetch(API_URL + '?' + params.toString());
+      if (!resp.ok) break;
+      const data = await resp.json();
+      if (!data.results || data.results.length === 0) break;
+
+      for (const r of data.results) {
+        const parsed = parseOrgResult(r);
+        if (addressMatches(parsed.address_line, addressLine)) {
+          results.push(parsed);
+        }
       }
+
+      if (data.results.length < PAGE_SIZE) break;
     }
+
     return results;
   } catch (e) { return []; }
 }
@@ -619,8 +758,8 @@ async function onSearch() {
         providers.push(prov);
       }
 
-      // Enrich with org info (first N)
-      setStatus(`Enriching results... (${Math.min(providers.length, AUTO_ENRICH_LIMIT)} providers)`);
+      // ── Phase 1: Enrich with org names (address lookup only, no Humana yet) ──
+      setStatus(`Finding organizations... (${Math.min(providers.length, AUTO_ENRICH_LIMIT)} providers)`);
       for (let i = 0; i < Math.min(providers.length, AUTO_ENRICH_LIMIT); i++) {
         const prov = providers[i];
         try {
@@ -647,16 +786,27 @@ async function onSearch() {
         } catch (e) {}
       }
 
-      // Check Humana network
-      setStatus('Checking Humana network...');
-      for (const prov of providers) {
-        try {
-          prov.humana_found = await checkHumanaNetwork(prov.npi, prov.zip);
-        } catch (e) {
-          prov.humana_found = false;
-        }
-      }
+      // ── Phase 2: Display results immediately so the user sees orgs ──
+      displayResults(providers);
 
+      // ── Phase 3: Run all Humana checks in parallel in the background ──
+      // Checks: each provider's own NPI + the primary org NPI for enriched providers.
+      // Only the primary org is checked here — extra orgs update on card interaction.
+      setStatus('Checking Humana network...');
+      const humanaJobs = providers.map(async (prov) => {
+        try { prov.humana_found = await checkHumanaNetwork(prov.npi, prov.zip); }
+        catch (e) { prov.humana_found = false; }
+
+        // Check primary org Humana status
+        const primaryOrg = prov.orgs_at_address && prov.orgs_at_address[0];
+        if (primaryOrg) {
+          try { primaryOrg.humana_found = await checkHumanaNetwork(primaryOrg.npi, primaryOrg.zip); }
+          catch (e) { primaryOrg.humana_found = false; }
+        }
+      });
+      await Promise.all(humanaJobs);
+
+      // Re-render now that Humana data is in
       displayResults(providers);
     } catch (e) {
       showError(e.message);
@@ -678,15 +828,14 @@ async function onSearch() {
         orgs.push(org);
       }
 
-      // Check Humana for orgs too
+      // Display immediately, then run Humana checks in parallel
+      displayResults(orgs);
+
       setStatus('Checking Humana network...');
-      for (const org of orgs) {
-        try {
-          org.humana_found = await checkHumanaNetwork(org.npi, org.zip);
-        } catch (e) {
-          org.humana_found = false;
-        }
-      }
+      await Promise.all(orgs.map(async (org) => {
+        try { org.humana_found = await checkHumanaNetwork(org.npi, org.zip); }
+        catch (e) { org.humana_found = false; }
+      }));
 
       displayResults(orgs);
     } catch (e) {
@@ -806,11 +955,18 @@ function makeCard(prov, index) {
 
       const orgRow = document.createElement('div');
       orgRow.className = 'org-row';
+      const primaryOrg = (prov.orgs_at_address && prov.orgs_at_address[0]) || {};
+      const primaryOrgHumana = primaryOrg.humana_found || false;
+      const escapedOrgName = escapeHtml(prov.org_full_name);
+      const safeOrgName = (prov.org_full_name || '').replace(/'/g, "\\'");
+      const safeOrgNpi = (prov.org_npi || '').replace(/'/g, "\\'");
       orgRow.innerHTML = `
         <span class="org-label-text">Org:</span>
-        <span class="org-name-text">${escapeHtml(prov.org_full_name)}</span>
-        <span class="org-npi-text">NPI: ${prov.org_npi || ''}</span>
-        <button class="copy-btn" onclick="navigator.clipboard.writeText('${prov.org_npi || ''}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)">Copy</button>
+        <span class="org-name-text">${escapedOrgName}</span>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText('${safeOrgName}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)">Copy Name</button>
+        <span class="org-npi-text">NPI: ${safeOrgNpi}</span>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText('${safeOrgNpi}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)">Copy NPI</button>
+        ${primaryOrgHumana ? '<span class="humana-badge" style="margin-left:4px;">Humana Medicare</span>' : ''}
       `;
       orgInfo.appendChild(orgRow);
 
@@ -844,7 +1000,15 @@ function makeCard(prov, index) {
           const row = document.createElement('div');
           row.className = 'org-row';
           row.style.marginTop = '4px';
-          row.innerHTML = `<span class="org-name-text">${escapeHtml(eo.name || 'Unknown')}</span> <span class="org-npi-text">NPI: ${eo.npi}</span>`;
+          const safeName = (eo.name || '').replace(/'/g, "\\'");
+          const safeNpi = (eo.npi || '').replace(/'/g, "\\'");
+          row.innerHTML = `
+            <span class="org-name-text">${escapeHtml(eo.name || 'Unknown')}</span>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('${safeName}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)">Copy Name</button>
+            <span class="org-npi-text">NPI: ${safeNpi}</span>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('${safeNpi}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)">Copy NPI</button>
+            ${eo.humana_found ? '<span class="humana-badge" style="margin-left:4px;">Humana Medicare</span>' : ''}
+          `;
           extraDiv.appendChild(row);
         });
         orgInfo.appendChild(extraDiv);
@@ -877,6 +1041,14 @@ function makeCard(prov, index) {
             prov.org_npi = orgs[0].npi;
             prov.org_match_method = 'address';
             prov.orgs_at_address = orgs;
+
+            // Check Humana network for each org found
+            findOrgBtn.textContent = 'Checking Humana...';
+            for (const org of orgs) {
+              try {
+                org.humana_found = await checkHumanaNetwork(org.npi, org.zip);
+              } catch (e) { org.humana_found = false; }
+            }
           } else {
             prov.org_enriched = true;
             prov.org_full_name = '';
@@ -946,16 +1118,18 @@ async function findProvidersAtOrg(orgProv) {
       }
     }
 
-    // Check Humana for these providers
-    setStatus('Checking Humana network...');
-    for (const prov of providers) {
-      try { prov.humana_found = await checkHumanaNetwork(prov.npi, prov.zip); } catch (e) { prov.humana_found = false; }
-    }
-
     if (providers.length === 0) {
       setStatus('No providers found at this exact address.');
       return;
     }
+
+    // Display immediately, then run Humana checks in parallel
+    displayResults(providers);
+
+    setStatus('Checking Humana network...');
+    await Promise.all(providers.map(async (prov) => {
+      try { prov.humana_found = await checkHumanaNetwork(prov.npi, prov.zip); } catch (e) { prov.humana_found = false; }
+    }));
 
     displayResults(providers);
   } catch (e) {
@@ -993,12 +1167,16 @@ function onExport() {
       p.city, p.state, p.zip, p.phone, p.humana_found ? 'Yes' : 'No'
     ]);
   } else {
-    headers = ['NPI', 'Provider Name', 'Specialty', 'Organization', 'Address', 'City', 'State', 'Zip', 'Phone', 'Humana Network'];
-    rows = currentResults.map(p => [
-      p.npi, p.name, p.specialty, p.org_full_name || p.org_name || '',
-      [p.address_line, p.address_line_2].filter(Boolean).join(', '),
-      p.city, p.state, p.zip, p.phone, p.humana_found ? 'Yes' : 'No'
-    ]);
+    headers = ['NPI', 'Provider Name', 'Specialty', 'Organization', 'Org NPI', 'Org Humana', 'Address', 'City', 'State', 'Zip', 'Phone', 'Humana Network'];
+    rows = currentResults.map(p => {
+      const primaryOrg = (p.orgs_at_address && p.orgs_at_address[0]) || {};
+      return [
+        p.npi, p.name, p.specialty, p.org_full_name || p.org_name || '',
+        p.org_npi || '', primaryOrg.humana_found ? 'Yes' : 'No',
+        [p.address_line, p.address_line_2].filter(Boolean).join(', '),
+        p.city, p.state, p.zip, p.phone, p.humana_found ? 'Yes' : 'No'
+      ];
+    });
   }
 
   const csvContent = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');

@@ -190,6 +190,30 @@ body {
   padding: 2px 8px; border-radius: 3px;
   background: var(--humana); color: #fff;
 }
+.humana-badge.clickable { cursor: pointer; transition: filter 0.15s, transform 0.15s; }
+.humana-badge.clickable:hover { filter: brightness(1.1); transform: translateY(-1px); }
+.verify-link {
+  font-size: 8px; color: var(--accent); text-decoration: none;
+  padding: 2px 8px; border-radius: 3px; background: var(--accent-dim);
+  transition: background 0.15s;
+}
+.verify-link:hover { background: var(--surface-hover); text-decoration: underline; }
+.plan-group { margin-bottom: 10px; }
+.plan-source {
+  font-size: 8px; font-weight: bold; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+}
+.plan-list { list-style: none; padding-left: 0; margin-bottom: 6px; }
+.plan-list li {
+  font-size: 10px; color: var(--text); padding: 4px 8px;
+  background: var(--surface-alt); border-radius: 3px; margin-bottom: 3px;
+}
+.plan-meta { color: var(--text-dim); font-size: 9px; }
+.plan-empty { font-size: 10px; color: var(--text-secondary); font-style: italic; }
+.plan-footnote {
+  font-size: 8px; color: var(--text-dim); margin-top: 10px;
+  padding-top: 8px; border-top: 1px solid var(--separator);
+}
 .no-org-text { font-size: 9px; color: var(--text-dim); font-style: italic; }
 .extra-orgs-toggle {
   font-size: 8px; color: var(--accent); cursor: pointer; text-decoration: underline;
@@ -225,7 +249,7 @@ body {
   <div class="header-inner">
     <h1>NPI Lookup</h1>
     <span class="subtitle">NPPES Registry</span>
-    <span class="ver-badge">v2.5</span>
+    <span class="ver-badge">v3.2</span>
     <div class="header-right">
       <button class="btn btn-surface" onclick="showNotes()">Notes</button>
       <button class="btn btn-surface" id="themeBtn" onclick="toggleTheme()">☀ Light</button>
@@ -279,6 +303,16 @@ body {
     <span class="status-text" id="statusText">Enter a name and location to search.</span>
   </div>
   <div class="results-area" id="resultsArea"></div>
+</div>
+
+<div class="notes-overlay" id="humanaOverlay" onclick="if(event.target===this)hideHumanaPlans()">
+  <div class="notes-box">
+    <h3 id="humanaTitle">Humana Medicare Plans</h3>
+    <div id="humanaContent"></div>
+    <div style="text-align:center;margin-top:12px">
+      <button class="btn btn-accent" onclick="hideHumanaPlans()">Close</button>
+    </div>
+  </div>
 </div>
 
 <div class="notes-overlay" id="notesOverlay">
@@ -414,46 +448,132 @@ async function searchOrgsByLocation(city, state, zipCode, limit = 50) {
   return data;
 }
 
-// ── Humana Medicare Network Check (v2.8 — FHIR primary, Finder fallback) ──
+// ── Humana Medicare Network Check (v3.0 — name-based Finder search) ──
+//
+// Why this approach:
+//   Humana's Finder API does NOT expose NPI in its search results (confirmed by
+//   inspecting live requests on finder.humana.com). Their primary key is an
+//   internal providerId (e.g. 2061106). Searching by NPI via SearchType:"5"
+//   returns empty for most providers — the endpoint effectively only supports
+//   name-based lookup despite the dropdown suggesting NPI search.
+//
+// Flow:
+//   1. validate-address(zip)            → {latitude, longitude, countyFips, stateFips}
+//   2. get-networks(zip + geo)          → list of Medicare networks for THAT zip
+//   3. get-provider-resultsv2(per pfpKey, name) → filter results by last-name
+//      match + address zip match to confirm identity.
+//
+// We have first_name/last_name from the NPPES result already — no need to
+// reverse-lookup NPI inside Humana.
 const HUMANA_FINDER_BASE = 'https://humana-fhir-proxy.npilookuptool.workers.dev/finder';
 
-async function checkHumanaNetwork(npi, zipCode) {
+// Flip to true in DevTools (`HUMANA_DEBUG = true`) to log every Finder
+// request/response. Use when a provider you expect to match doesn't — the
+// console will show which (network, PfpKey) combinations returned empty vs hit.
+// Auto-enabled when running from file:// (desktop use) or when URL has ?debug=1.
+let HUMANA_DEBUG = (typeof window !== 'undefined' &&
+  (window.location.protocol === 'file:' || /[?&]debug=1\b/.test(window.location.search)));
+
+// Humana's network list is PER-ZIP — pfpKeys and plan names differ for every
+// county/state. Earlier versions hardcoded ~11 network names + pfpKey "4075"
+// but pfpKey 4075 is specifically "Natl Med HMO H1036 (NC)-Home" (a single
+// NC-only HMO), so any provider outside that sliver got missed.
+//
+// v3.0 fetches the real network list for the provider's zip at query time
+// via /v1/pfp/get-networks, then does a NAME-based search per unique pfpKey.
+
+// Map Humana's "lineOfBusiness" / plan description → short bucket label for
+// the badge. Anything not matching falls into the raw description.
+function humanaNetworkType(net) {
+  const d = (net.pfpDescription || '').toLowerCase();
+  if (d.includes('hmo-pos') || d.includes('hmo pos')) return 'HMO-POS';
+  if (d.includes('ppo'))  return 'PPO';
+  if (d.includes('hmo'))  return 'HMO';
+  if (d.includes('pffs')) return 'PFFS';
+  if (d.includes('pos'))  return 'POS';
+  if (d.includes('snp'))  return 'SNP';
+  return 'Medicare';
+}
+
+// Display order for network types in the badge/modal.
+const HUMANA_TYPE_ORDER = ['PPO', 'HMO', 'HMO-POS', 'POS', 'PFFS', 'SNP', 'Medicare'];
+
+// Pull unique network-type tags out of a plans array — used for the badge text.
+function humanaTypeSummary(plans) {
+  const types = new Set();
+  (plans || []).forEach(p => { if (p.networkType) types.add(p.networkType); });
+  if (types.size === 0) return '';
+  const ordered = [...HUMANA_TYPE_ORDER.filter(t => types.has(t)),
+                   ...[...types].filter(t => !HUMANA_TYPE_ORDER.includes(t))];
+  return ' — ' + ordered.join(', ');
+}
+
+async function checkHumanaNetwork(provider, zipCode) {
   /*
-   * Check if a provider participates in a Humana Medicare network.
+   * Check if a provider participates in any Humana Medicare network.
    *
-   * Strategy (cascading):
-   *   1. FHIR API (primary) — CMS-mandated, stable endpoint.
-   *      Step A: GET Practitioner?identifier=NPI → get Humana's internal FHIR ID
-   *      Step B: GET PractitionerRole?practitioner=Practitioner/{id} → get network/plan info
-   *      If any PractitionerRole exists → provider is in Humana's directory.
+   * Accepts: full provider object (npi, first_name, last_name, org_name,
+   *          is_org, zip, state). Legacy callers passing just a NPI string
+   *          are auto-wrapped for backward compatibility.
    *
-   *   2. Finder API (fallback) — powers finder.humana.com, broader dataset but
-   *      unofficial and may go down. Only tried if FHIR returns nothing.
+   * Returns: { found: boolean, plans: [{ name, type, source }] }
    *
-   * Why two steps for FHIR?
-   *   PractitionerRole?practitioner.identifier (chained search) scans 23M records
-   *   and always times out (>30s). The two-step approach avoids this entirely.
+   * Strategy (both sources run in parallel, results merged):
+   *   1. FHIR API — structured directory. Works for ~1.2M providers but has
+   *      known gaps (e.g. Dr. Babaoff is in-network but absent from FHIR).
+   *   2. Finder API — full-coverage directory that powers finder.humana.com.
+   *      Name-based search scoped to the networks that actually serve the
+   *      provider's zip code.
    */
 
-  // ── Step 1: FHIR lookup (primary) ──
-  const fhirResult = await checkHumanaFHIR(npi);
-  if (fhirResult) return true;
+  // Back-compat: old signature was checkHumanaNetwork(npi, zip)
+  if (typeof provider === 'string') provider = { npi: provider, zip: zipCode };
+  const npi = provider.npi;
+  const zip = zipCode || provider.zip;
 
-  // ── Step 2: Finder API (fallback) ──
-  return await checkHumanaFinder(npi, zipCode);
+  const [fhirResult, finderResult] = await Promise.all([
+    checkHumanaFHIR(npi),
+    checkHumanaFinder(provider, zip)
+  ]);
+
+  const found = fhirResult.found || finderResult.found;
+  const plans = dedupePlans([...fhirResult.plans, ...finderResult.plans]);
+
+  // If we know they're in Humana but both sources gave zero named plans,
+  // drop in a generic entry so the modal isn't empty.
+  if (found && plans.length === 0) {
+    plans.push({
+      name: 'Humana Medicare (network confirmed, plan detail unavailable)',
+      type: 'General',
+      source: fhirResult.found ? 'Humana FHIR' : 'Humana Finder'
+    });
+  }
+
+  return { found, plans };
+}
+
+function dedupePlans(plans) {
+  const seen = new Set();
+  const out = [];
+  for (const p of plans) {
+    const key = (p.name || '').toLowerCase().trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
 }
 
 async function checkHumanaFHIR(npi) {
   /*
-   * Two-step FHIR lookup:
-   *   A) Find the Practitioner resource by NPI → extract internal ID
-   *   B) Query PractitionerRole using that ID → confirms network participation
+   * Two-step FHIR lookup (chained search times out on 23M records — don't use it):
+   *   A) Practitioner?identifier=NPI → internal Humana FHIR ID
+   *   B) PractitionerRole?practitioner=Practitioner/{id} → network/org detail
    *
-   * Returns true if PractitionerRole entries exist, false otherwise.
-   * A Practitioner existing alone (step A) is enough to confirm presence
-   * in Humana's directory, but PractitionerRole gives us network detail.
-   * We return true from step A if the practitioner is found, since being
-   * in Humana's FHIR directory at all indicates a contractual relationship.
+   * Returns { found, plans } where plans are extracted from PractitionerRole
+   * organization.display, extension.valueString (for plan-net Network extension),
+   * and code.text fields. Humana's FHIR shape is inconsistent so we pull from
+   * multiple spots.
    */
   try {
     const ctrl = new AbortController();
@@ -466,90 +586,218 @@ async function checkHumanaFHIR(npi) {
       signal: ctrl.signal
     });
 
-    if (!practResp.ok) { clearTimeout(timer); return false; }
+    if (!practResp.ok) { clearTimeout(timer); return { found: false, plans: [] }; }
     const practData = await practResp.json();
     const entries = practData?.entry || [];
-    if (entries.length === 0) { clearTimeout(timer); return false; }
+    if (entries.length === 0) { clearTimeout(timer); return { found: false, plans: [] }; }
 
-    // Got a Practitioner — extract the internal FHIR ID
     const practitionerId = entries[0]?.resource?.id;
-    if (!practitionerId) { clearTimeout(timer); return true; } // found but no ID — still a match
+    if (!practitionerId) { clearTimeout(timer); return { found: true, plans: [] }; }
 
-    // Step B — check PractitionerRole for network detail
-    const roleUrl = `${HUMANA_FHIR_BASE}/PractitionerRole?practitioner=Practitioner/${practitionerId}&_count=1`;
+    // Step B — pull up to 50 roles so we see every network attachment.
+    const roleUrl = `${HUMANA_FHIR_BASE}/PractitionerRole?practitioner=Practitioner/${practitionerId}&_count=50`;
     const roleResp = await fetch(roleUrl, {
       headers: { 'Accept': 'application/fhir+json, application/json' },
       signal: ctrl.signal
     });
     clearTimeout(timer);
 
-    if (!roleResp.ok) return true; // Practitioner exists even if role query fails
+    if (!roleResp.ok) return { found: true, plans: [] };
     const roleData = await roleResp.json();
     const roles = roleData?.entry || [];
 
-    // Practitioner was found in step A — that's a confirmed Humana directory entry.
-    // PractitionerRole gives bonus detail but isn't required for the badge.
-    return true;
+    // Extract whatever network/plan signal the role resources carry.
+    const plans = [];
+    for (const r of roles) {
+      const res = r?.resource || {};
+
+      // Plan-Net "Network" extension — the canonical place for network name.
+      const exts = res.extension || [];
+      for (const ext of exts) {
+        if (!ext?.url) continue;
+        const urlLower = ext.url.toLowerCase();
+        if (urlLower.includes('network')) {
+          const name = ext.valueString
+            || ext.valueReference?.display
+            || ext.valueCodeableConcept?.text;
+          if (name) plans.push({ name, type: 'Network', source: 'Humana FHIR' });
+        }
+      }
+
+      // Organization link — often the sponsoring network org.
+      if (res.organization?.display) {
+        plans.push({ name: res.organization.display, type: 'Organization', source: 'Humana FHIR' });
+      }
+
+      // Role code text — sometimes carries plan-like labels.
+      const codes = res.code || [];
+      for (const c of codes) {
+        if (c?.text) plans.push({ name: c.text, type: 'Role', source: 'Humana FHIR' });
+      }
+    }
+
+    return { found: true, plans: dedupePlans(plans) };
 
   } catch (e) {
-    return false;
+    return { found: false, plans: [] };
   }
 }
 
-async function checkHumanaFinder(npi, zipCode) {
+async function checkHumanaFinder(provider, zipCode) {
   /*
-   * Fallback: Humana's Finder API (powers finder.humana.com).
-   * More complete dataset than FHIR (~full provider roster vs ~1.2M subset),
-   * but unofficial — Humana can change or disable it without notice.
+   * Finder API — the endpoint that powers finder.humana.com.
    *
-   * POST /v1/pfp/get-provider-resultsv2
-   *   SearchType "5" = NPI search
-   *   network "Medicare PPO" = broadest Medicare network
-   *   If results come back → provider is in Humana Medicare.
+   * 3-step flow (captured from the live site):
+   *   a) POST /v1/elu/validate-address {zipCode}
+   *        → {latitude, longitude, countyFips, stateFips}
+   *   b) POST /v1/pfp/get-networks {coverageType:"3", location, countyFips, stateFips}
+   *        → array of {pfpKey, pfpDescription, lineOfBusiness}  (Medicare nets for this zip)
+   *   c) POST /v1/pfp/get-provider-resultsv2 (per unique pfpKey, searching by NAME)
+   *        → list of providers; match by last-name (+ address zip when present)
+   *
+   * Why name, not NPI: Humana's Finder API does not return NPI in its response
+   * (they key everything off an internal providerId) and NPI search via
+   * SearchType:"5" returns empty for most providers. Name search works and
+   * the NPPES name we already have is specific enough to match safely.
    */
+  const zip = zipCode || provider.zip || '70601';  // Lake Charles, LA fallback
+  const first = (provider.first_name || '').trim();
+  const last  = (provider.last_name  || '').trim();
+  const isOrg = provider.is_org || !last;
+  const searchTerm = isOrg ? (provider.org_name || provider.name || '').trim() : `${first} ${last}`.trim();
+  if (HUMANA_DEBUG) console.log('[Humana] checkHumanaFinder start', { searchTerm, zip, isOrg, npi: provider.npi, state: provider.state });
+  if (!searchTerm) return { found: false, plans: [] };
+
+  // ── Step A: validate-address → lat/long + FIPS codes ──
+  let geo;
   try {
-    const zip = zipCode || '70601';  // fallback zip (Lake Charles, LA)
-
-    const body = {
-      network: 'Medicare PPO',
-      searchTerm: String(npi),
-      Zipcode: zip,
-      PfpKey: '4075',
-      Distance: '500',
-      flagMcareFuture: false,
-      SearchType: '5',
-      SearchText: String(npi),
-      SearchEntityId: '0',
-      FlagDental: false,
-      RowStartWith: 1,
-      RowCount: 1,
-      SortBy: '4'
-    };
-
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 15000);
-
-    const resp = await fetch(`${HUMANA_FINDER_BASE}/v1/pfp/get-provider-resultsv2`, {
+    const r = await fetch(`${HUMANA_FINDER_BASE}/v1/elu/validate-address`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify(body),
-      signal: ctrl.signal
+      body: JSON.stringify({ zipCode: zip })
     });
-    clearTimeout(timer);
-
-    if (!resp.ok) return false;
-
-    // Empty response (content-length: 0) means endpoint is down — treat as no data
-    const text = await resp.text();
-    if (!text || text.length === 0) return false;
-
-    const data = JSON.parse(text);
-    const results = data?.providerSearchResults || data?.resultsResponse?.providerSearchResults || [];
-    return results.length > 0;
-
+    if (HUMANA_DEBUG) console.log('[Humana] validate-address status', r.status);
+    if (!r.ok) return { found: false, plans: [] };
+    geo = await r.json();
+    if (HUMANA_DEBUG) console.log('[Humana] validate-address response', geo);
+    if (!geo || !geo.latitude || !geo.countyFips) return { found: false, plans: [] };
   } catch (e) {
-    return false;
+    if (HUMANA_DEBUG) console.log('[Humana] validate-address failed', e);
+    return { found: false, plans: [] };
   }
+
+  // ── Step B: get-networks → authoritative Medicare network list for this zip ──
+  let nets;
+  try {
+    const r = await fetch(`${HUMANA_FINDER_BASE}/v1/pfp/get-networks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({
+        coverageType: '3',                             // 3 = Medicare
+        location: { address: { zip } },
+        customerId: '1',
+        dataPeriodType: 0,
+        countyFips: geo.countyFips,
+        stateFips:  geo.stateFips
+      })
+    });
+    if (HUMANA_DEBUG) console.log('[Humana] get-networks status', r.status);
+    if (!r.ok) return { found: false, plans: [] };
+    nets = await r.json();
+    if (HUMANA_DEBUG) console.log('[Humana] get-networks returned', Array.isArray(nets) ? nets.length : 'non-array', nets);
+    if (!Array.isArray(nets) || nets.length === 0) return { found: false, plans: [] };
+  } catch (e) {
+    if (HUMANA_DEBUG) console.log('[Humana] get-networks failed', e);
+    return { found: false, plans: [] };
+  }
+
+  // Dedupe by pfpKey (Humana often lists multiple plan names sharing one pfpKey).
+  const uniqNets = [...new Map(nets.filter(n => n && n.pfpKey).map(n => [n.pfpKey, n])).values()];
+
+  // ── Step C: query each network for the provider's NAME, match by last name + state ──
+  const plans = [];
+  let anyFound = false;
+  const lastLower = last.toLowerCase();
+  const firstLower = first.toLowerCase();
+  const stateCode = (provider.state || '').toUpperCase();
+
+  await Promise.all(uniqNets.map(async (net) => {
+    try {
+      const body = {
+        network: net.pfpDescription,
+        searchTerm,
+        Zipcode: zip,
+        PfpKey: net.pfpKey,
+        Distance: '25',
+        flagMcareFuture: false,
+        SearchType: isOrg ? '1' : '1',       // 1 = name search (the only one that works)
+        SearchText: searchTerm,
+        SearchEntityId: '0',
+        FlagDental: false,
+        RowStartWith: 1,
+        RowCount: 50,
+        SortBy: '1',
+        Location: { GeoCode: { Latitude: geo.latitude, Longitude: geo.longitude } },
+        CustomerId: '1',
+        flagMedicare: true,
+        coverageTypeSelected: '3',
+        countyFips: geo.countyFips,
+        stateFips:  geo.stateFips
+      };
+
+      const ctrl  = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 15000);
+      const resp = await fetch(`${HUMANA_FINDER_BASE}/v1/pfp/get-provider-resultsv2`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body),
+        signal: ctrl.signal
+      });
+      clearTimeout(timer);
+      if (HUMANA_DEBUG) console.log(`[Humana] pfpKey=${net.pfpKey} "${net.pfpDescription}" status=${resp.status}`);
+      if (!resp.ok) return;
+
+      const data = await resp.json();
+      const results = data?.providerSearchResults || [];
+      if (results.length === 0) return;
+
+      // Match: providerName is "Last, First M Credential". Require last name match
+      // AND either first-name match or state match to minimize false positives.
+      const matched = results.some(r => {
+        const pName = (r.providerName || '').toLowerCase();
+        if (isOrg) {
+          // For orgs, any substring match on a significant word is enough.
+          const token = searchTerm.toLowerCase().split(/\s+/).find(t => t.length > 3) || searchTerm.toLowerCase();
+          return pName.includes(token);
+        }
+        if (!pName.includes(lastLower)) return false;
+        if (firstLower && pName.includes(firstLower)) return true;
+        // Fallback: last-name match + same state address → still considered a match.
+        const addrState = (r.address && r.address.statesCode || '').toUpperCase();
+        return stateCode && addrState === stateCode;
+      });
+
+      if (HUMANA_DEBUG) {
+        const sample = results.slice(0, 3).map(r => r.providerName);
+        console.log(`[Humana] pfpKey=${net.pfpKey} results=${results.length} matched=${matched}`, sample);
+      }
+      if (!matched) return;
+
+      anyFound = true;
+      plans.push({
+        name: net.pfpDescription,
+        type: 'Medicare',
+        networkType: humanaNetworkType(net),
+        source: 'Humana Finder',
+        pfpKey: net.pfpKey
+      });
+    } catch (e) {
+      if (HUMANA_DEBUG) console.log(`[Humana] pfpKey=${net.pfpKey} error=${e.message}`);
+    }
+  }));
+
+  if (HUMANA_DEBUG) console.log(`[Humana] final: found=${anyFound} plans=${plans.length}`, plans.map(p => p.name));
+  return { found: anyFound, plans: dedupePlans(plans) };
 }
 
 // ── Address Abbreviation Map ──
@@ -672,6 +920,8 @@ function parseProvider(result) {
   return {
     npi: result.number || '',
     name: name,
+    first_name: first,          // exposed for Humana name-based search
+    last_name: last,            // exposed for result matching
     specialty: primaryTax ? (primaryTax.desc || 'N/A') : 'N/A',
     taxonomy_code: primaryTax ? (primaryTax.code || '') : '',
     address_line: addr.address_1 || '',
@@ -794,14 +1044,20 @@ async function onSearch() {
       // Only the primary org is checked here — extra orgs update on card interaction.
       setStatus('Checking Humana network...');
       const humanaJobs = providers.map(async (prov) => {
-        try { prov.humana_found = await checkHumanaNetwork(prov.npi, prov.zip); }
-        catch (e) { prov.humana_found = false; }
+        try {
+          const r = await checkHumanaNetwork(prov, prov.zip);
+          prov.humana_found = r.found;
+          prov.humana_plans = r.plans;
+        } catch (e) { prov.humana_found = false; prov.humana_plans = []; }
 
         // Check primary org Humana status
         const primaryOrg = prov.orgs_at_address && prov.orgs_at_address[0];
         if (primaryOrg) {
-          try { primaryOrg.humana_found = await checkHumanaNetwork(primaryOrg.npi, primaryOrg.zip); }
-          catch (e) { primaryOrg.humana_found = false; }
+          try {
+            const r = await checkHumanaNetwork(primaryOrg, primaryOrg.zip);
+            primaryOrg.humana_found = r.found;
+            primaryOrg.humana_plans = r.plans;
+          } catch (e) { primaryOrg.humana_found = false; primaryOrg.humana_plans = []; }
         }
       });
       await Promise.all(humanaJobs);
@@ -833,8 +1089,11 @@ async function onSearch() {
 
       setStatus('Checking Humana network...');
       await Promise.all(orgs.map(async (org) => {
-        try { org.humana_found = await checkHumanaNetwork(org.npi, org.zip); }
-        catch (e) { org.humana_found = false; }
+        try {
+          const r = await checkHumanaNetwork(org, org.zip);
+          org.humana_found = r.found;
+          org.humana_plans = r.plans;
+        } catch (e) { org.humana_found = false; org.humana_plans = []; }
       }));
 
       displayResults(orgs);
@@ -960,13 +1219,17 @@ function makeCard(prov, index) {
       const escapedOrgName = escapeHtml(prov.org_full_name);
       const safeOrgName = (prov.org_full_name || '').replace(/'/g, "\\'");
       const safeOrgNpi = (prov.org_npi || '').replace(/'/g, "\\'");
+      const orgBadgeAttrs = primaryOrgHumana
+        ? `data-humana-badge="1" data-name="${escapeAttr(prov.org_full_name || 'Organization')}" data-plans="${escapeAttr(JSON.stringify(primaryOrg.humana_plans || []))}"`
+        : '';
+      const primaryOrgBadgeText = 'Humana Medicare' + humanaTypeSummary(primaryOrg.humana_plans) + ' ▾';
       orgRow.innerHTML = `
         <span class="org-label-text">Org:</span>
         <span class="org-name-text">${escapedOrgName}</span>
         <button class="copy-btn" onclick="navigator.clipboard.writeText('${safeOrgName}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)">Copy Name</button>
         <span class="org-npi-text">NPI: ${safeOrgNpi}</span>
         <button class="copy-btn" onclick="navigator.clipboard.writeText('${safeOrgNpi}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)">Copy NPI</button>
-        ${primaryOrgHumana ? '<span class="humana-badge" style="margin-left:4px;">Humana Medicare</span>' : ''}
+        ${primaryOrgHumana ? `<span class="humana-badge clickable" style="margin-left:4px;" ${orgBadgeAttrs}>${escapeHtml(primaryOrgBadgeText)}</span>` : ''}
       `;
       orgInfo.appendChild(orgRow);
 
@@ -1002,12 +1265,16 @@ function makeCard(prov, index) {
           row.style.marginTop = '4px';
           const safeName = (eo.name || '').replace(/'/g, "\\'");
           const safeNpi = (eo.npi || '').replace(/'/g, "\\'");
+          const eoBadgeAttrs = eo.humana_found
+            ? `data-humana-badge="1" data-name="${escapeAttr(eo.name || 'Organization')}" data-plans="${escapeAttr(JSON.stringify(eo.humana_plans || []))}"`
+            : '';
+          const eoBadgeText = 'Humana Medicare' + humanaTypeSummary(eo.humana_plans) + ' ▾';
           row.innerHTML = `
             <span class="org-name-text">${escapeHtml(eo.name || 'Unknown')}</span>
             <button class="copy-btn" onclick="navigator.clipboard.writeText('${safeName}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)">Copy Name</button>
             <span class="org-npi-text">NPI: ${safeNpi}</span>
             <button class="copy-btn" onclick="navigator.clipboard.writeText('${safeNpi}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)">Copy NPI</button>
-            ${eo.humana_found ? '<span class="humana-badge" style="margin-left:4px;">Humana Medicare</span>' : ''}
+            ${eo.humana_found ? `<span class="humana-badge clickable" style="margin-left:4px;" ${eoBadgeAttrs}>${escapeHtml(eoBadgeText)}</span>` : ''}
           `;
           extraDiv.appendChild(row);
         });
@@ -1046,8 +1313,10 @@ function makeCard(prov, index) {
             findOrgBtn.textContent = 'Checking Humana...';
             for (const org of orgs) {
               try {
-                org.humana_found = await checkHumanaNetwork(org.npi, org.zip);
-              } catch (e) { org.humana_found = false; }
+                const r = await checkHumanaNetwork(org, org.zip);
+                org.humana_found = r.found;
+                org.humana_plans = r.plans;
+              } catch (e) { org.humana_found = false; org.humana_plans = []; }
             }
           } else {
             prov.org_enriched = true;
@@ -1074,19 +1343,38 @@ function makeCard(prov, index) {
     }
   }
 
-  // Humana Badge
-  if (prov.humana_found) {
-    const sep = document.createElement('div');
-    sep.style.height = '1px';
-    sep.style.background = 'var(--separator)';
-    sep.style.margin = '8px 0 6px';
-    body.appendChild(sep);
+  // Humana Badge + manual verify link
+  const humanaRow = document.createElement('div');
+  humanaRow.style.cssText = 'display:flex;gap:8px;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid var(--separator);flex-wrap:wrap;';
 
+  if (prov.humana_found) {
     const badge = document.createElement('span');
-    badge.className = 'humana-badge';
-    badge.textContent = '  Humana Medicare  ';
-    body.appendChild(badge);
+    badge.className = 'humana-badge clickable';
+    badge.textContent = '  Humana Medicare' + humanaTypeSummary(prov.humana_plans) + ' ▾  ';
+    badge.setAttribute('data-humana-badge', '1');
+    badge.setAttribute('data-name', prov.name || prov.org_name || 'Provider');
+    badge.setAttribute('data-plans', JSON.stringify(prov.humana_plans || []));
+    humanaRow.appendChild(badge);
+  } else if (prov.humana_found === false) {
+    // Explicitly checked and not found — show muted indicator so user knows it was checked.
+    const miss = document.createElement('span');
+    miss.style.cssText = 'font-size:8px;color:var(--text-dim);font-style:italic;';
+    miss.textContent = 'Not in Humana Finder';
+    humanaRow.appendChild(miss);
   }
+
+  // Manual verify link — always present. Reverse-engineered Finder API will
+  // never hit 100% recall; this button takes you to Humana's own search
+  // pre-populated with this NPI so you can eyeball it.
+  const verifyLink = document.createElement('a');
+  verifyLink.href = `https://finder.humana.com/finder/medical/results?zipcode=${encodeURIComponent(prov.zip || '')}&searchType=5&searchText=${encodeURIComponent(prov.npi)}`;
+  verifyLink.target = '_blank';
+  verifyLink.rel = 'noopener noreferrer';
+  verifyLink.className = 'verify-link';
+  verifyLink.textContent = 'Verify on Humana.com ↗';
+  humanaRow.appendChild(verifyLink);
+
+  body.appendChild(humanaRow);
 
   card.appendChild(body);
   return card;
@@ -1097,6 +1385,86 @@ function escapeHtml(text) {
   div.textContent = text;
   return div.innerHTML;
 }
+
+// Escape for use inside double-quoted HTML attributes.
+// Needed when we stuff JSON (plan arrays) into data-* attributes.
+function escapeAttr(text) {
+  return String(text == null ? '' : text)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+// ── Humana Plans Modal ──
+function showHumanaPlans(providerName, plans) {
+  const overlay = document.getElementById('humanaOverlay');
+  const title = document.getElementById('humanaTitle');
+  const content = document.getElementById('humanaContent');
+
+  title.textContent = `${providerName} — Humana Medicare`;
+
+  if (!plans || plans.length === 0) {
+    content.innerHTML = '<p class="plan-empty">Network participation confirmed, but no specific plan detail was returned by the directory.</p>';
+  } else {
+    // Split: Finder plans group by network TYPE (PPO/HMO/etc); FHIR plans go in their own block.
+    const finderByType = {};
+    const fhirPlans = [];
+    plans.forEach(p => {
+      if (p.networkType) {
+        (finderByType[p.networkType] = finderByType[p.networkType] || []).push(p);
+      } else {
+        fhirPlans.push(p);
+      }
+    });
+
+    const seenTypes = Object.keys(finderByType);
+    const orderedTypes = [
+      ...HUMANA_TYPE_ORDER.filter(t => seenTypes.includes(t)),
+      ...seenTypes.filter(t => !HUMANA_TYPE_ORDER.includes(t))
+    ];
+
+    const blocks = [];
+    for (const t of orderedTypes) {
+      const items = finderByType[t].map(p =>
+        `<li><strong>${escapeHtml(p.name)}</strong></li>`
+      ).join('');
+      blocks.push(`<div class="plan-group"><div class="plan-source">Humana Medicare ${escapeHtml(t)}</div><ul class="plan-list">${items}</ul></div>`);
+    }
+    if (fhirPlans.length > 0) {
+      const items = fhirPlans.map(p =>
+        `<li><strong>${escapeHtml(p.name)}</strong>${p.type ? ` <span class="plan-meta">— ${escapeHtml(p.type)}</span>` : ''}</li>`
+      ).join('');
+      blocks.push(`<div class="plan-group"><div class="plan-source">Humana FHIR Directory</div><ul class="plan-list">${items}</ul></div>`);
+    }
+
+    content.innerHTML = blocks.join('') +
+      '<p class="plan-footnote">Plan types are grouped across Humana\'s directory sources. Always verify specific plan benefits with Humana before enrolling a member.</p>';
+  }
+
+  overlay.classList.add('show');
+}
+
+function hideHumanaPlans() {
+  document.getElementById('humanaOverlay').classList.remove('show');
+}
+
+// Delegated click handler — works for badges rendered via innerHTML and
+// badges rendered via createElement. Keeps a single code path.
+document.addEventListener('click', (e) => {
+  const badge = e.target.closest && e.target.closest('[data-humana-badge="1"]');
+  if (!badge) return;
+  const name = badge.getAttribute('data-name') || 'Provider';
+  let plans = [];
+  try { plans = JSON.parse(badge.getAttribute('data-plans') || '[]'); } catch (err) {}
+  showHumanaPlans(name, plans);
+});
+
+// Close modal with Escape key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') hideHumanaPlans();
+});
 
 // ── Find Providers at Org ──
 async function findProvidersAtOrg(orgProv) {
@@ -1128,7 +1496,11 @@ async function findProvidersAtOrg(orgProv) {
 
     setStatus('Checking Humana network...');
     await Promise.all(providers.map(async (prov) => {
-      try { prov.humana_found = await checkHumanaNetwork(prov.npi, prov.zip); } catch (e) { prov.humana_found = false; }
+      try {
+        const r = await checkHumanaNetwork(prov, prov.zip);
+        prov.humana_found = r.found;
+        prov.humana_plans = r.plans;
+      } catch (e) { prov.humana_found = false; prov.humana_plans = []; }
     }));
 
     displayResults(providers);
@@ -1159,22 +1531,34 @@ function onExport() {
   if (!currentResults.length) return;
   const isOrgResults = currentResults[0]?.is_org;
   let headers, rows;
+  // Derive a clean "PPO, HMO" style string for the export column.
+  const typeStr = (plans) => {
+    const summary = humanaTypeSummary(plans);
+    return summary.startsWith(' — ') ? summary.slice(3) : summary;
+  };
+
   if (isOrgResults) {
-    headers = ['NPI', 'Organization Name', 'Specialty', 'Address', 'City', 'State', 'Zip', 'Phone', 'Humana Network'];
+    headers = ['NPI', 'Organization Name', 'Specialty', 'Address', 'City', 'State', 'Zip', 'Phone', 'Humana Network', 'Humana Plan Types'];
     rows = currentResults.map(p => [
       p.npi, p.name, p.specialty,
       [p.address_line, p.address_line_2].filter(Boolean).join(', '),
-      p.city, p.state, p.zip, p.phone, p.humana_found ? 'Yes' : 'No'
+      p.city, p.state, p.zip, p.phone,
+      p.humana_found ? 'Yes' : 'No',
+      typeStr(p.humana_plans)
     ]);
   } else {
-    headers = ['NPI', 'Provider Name', 'Specialty', 'Organization', 'Org NPI', 'Org Humana', 'Address', 'City', 'State', 'Zip', 'Phone', 'Humana Network'];
+    headers = ['NPI', 'Provider Name', 'Specialty', 'Organization', 'Org NPI', 'Org Humana', 'Org Plan Types', 'Address', 'City', 'State', 'Zip', 'Phone', 'Humana Network', 'Humana Plan Types'];
     rows = currentResults.map(p => {
       const primaryOrg = (p.orgs_at_address && p.orgs_at_address[0]) || {};
       return [
         p.npi, p.name, p.specialty, p.org_full_name || p.org_name || '',
-        p.org_npi || '', primaryOrg.humana_found ? 'Yes' : 'No',
+        p.org_npi || '',
+        primaryOrg.humana_found ? 'Yes' : 'No',
+        typeStr(primaryOrg.humana_plans),
         [p.address_line, p.address_line_2].filter(Boolean).join(', '),
-        p.city, p.state, p.zip, p.phone, p.humana_found ? 'Yes' : 'No'
+        p.city, p.state, p.zip, p.phone,
+        p.humana_found ? 'Yes' : 'No',
+        typeStr(p.humana_plans)
       ];
     });
   }

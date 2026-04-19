@@ -57,25 +57,37 @@ export default {
     const targetUrl = targetBase + strippedPath + url.search;
 
     try {
-      // Build upstream headers
+      // Read the POST body to a string up-front — streaming ReadableStream
+      // bodies through fetch() inside a Cloudflare Worker can arrive at the
+      // upstream with no Content-Length header, which the Humana Finder API
+      // treats as an empty request (returns 200 with an empty body).
+      let requestBody;
+      if (request.method === 'POST') {
+        requestBody = await request.text();
+      }
+
+      // Build upstream headers — chosen to mirror what finder.humana.com sends
+      // from a real Chrome session.
       const upstreamHeaders = {
-        'Accept': 'application/fhir+json, application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept':           'application/json, text/plain, */*',
+        'Accept-Language':  'en-US,en;q=0.9',
+        'User-Agent':       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       };
       if (request.method === 'POST') {
         upstreamHeaders['Content-Type'] = request.headers.get('Content-Type') || 'application/json';
       }
-      // Finder API requires requests to appear as if they come from the finder portal
+      // Finder + FHIR APIs expect requests to appear as if they come from Humana's own portal.
       if (targetBase.includes('finder.humana.com')) {
-        upstreamHeaders['Origin'] = 'https://finder.humana.com';
+        upstreamHeaders['Origin']  = 'https://finder.humana.com';
         upstreamHeaders['Referer'] = 'https://finder.humana.com/finder/medical/results';
+      } else if (targetBase.includes('fhir.humana.com')) {
+        upstreamHeaders['Accept'] = 'application/fhir+json, application/json';
       }
 
       const response = await fetch(targetUrl, {
         method: request.method,
         headers: upstreamHeaders,
-        // Forward the body for POST requests
-        body: request.method === 'POST' ? request.body : undefined,
+        body: requestBody, // may be undefined for GET
       });
 
       const body = await response.text();

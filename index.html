@@ -198,6 +198,13 @@ body {
   transition: background 0.15s;
 }
 .verify-link:hover { background: var(--surface-hover); text-decoration: underline; }
+/* Primary variant — used when FHIR returned nothing, so the verify button
+   is the main action. Larger, solid accent color, more inviting. */
+.verify-link-primary {
+  font-size: 12px; font-weight: 600; color: #fff !important;
+  background: var(--accent); padding: 6px 14px; border-radius: 4px;
+}
+.verify-link-primary:hover { filter: brightness(1.1); text-decoration: none; }
 .plan-group { margin-bottom: 10px; }
 .plan-source {
   font-size: 8px; font-weight: bold; color: var(--text-dim);
@@ -249,7 +256,7 @@ body {
   <div class="header-inner">
     <h1>NPI Lookup</h1>
     <span class="subtitle">NPPES Registry</span>
-    <span class="ver-badge">v3.2</span>
+    <span class="ver-badge">v3.5</span>
     <div class="header-right">
       <button class="btn btn-surface" onclick="showNotes()">Notes</button>
       <button class="btn btn-surface" id="themeBtn" onclick="toggleTheme()">☀ Light</button>
@@ -518,38 +525,31 @@ async function checkHumanaNetwork(provider, zipCode) {
    *
    * Returns: { found: boolean, plans: [{ name, type, source }] }
    *
-   * Strategy (both sources run in parallel, results merged):
-   *   1. FHIR API — structured directory. Works for ~1.2M providers but has
-   *      known gaps (e.g. Dr. Babaoff is in-network but absent from FHIR).
-   *   2. Finder API — full-coverage directory that powers finder.humana.com.
-   *      Name-based search scoped to the networks that actually serve the
-   *      provider's zip code.
+   * v3.3 — FHIR only. The Finder API sits behind Cloudflare bot protection
+   * that returns 200-empty for any request coming from our Cloudflare Worker
+   * proxy. Confirmed on 2026-04-18 via per-stage diagnostic. FHIR covers
+   * ~1.2M providers; providers not in FHIR get a prominent deep-link button
+   * to finder.humana.com so a salesperson can verify in 3 seconds.
    */
 
   // Back-compat: old signature was checkHumanaNetwork(npi, zip)
   if (typeof provider === 'string') provider = { npi: provider, zip: zipCode };
   const npi = provider.npi;
-  const zip = zipCode || provider.zip;
 
-  const [fhirResult, finderResult] = await Promise.all([
-    checkHumanaFHIR(npi),
-    checkHumanaFinder(provider, zip)
-  ]);
+  const fhirResult = await checkHumanaFHIR(npi);
 
-  const found = fhirResult.found || finderResult.found;
-  const plans = dedupePlans([...fhirResult.plans, ...finderResult.plans]);
-
-  // If we know they're in Humana but both sources gave zero named plans,
-  // drop in a generic entry so the modal isn't empty.
-  if (found && plans.length === 0) {
+  // If they're in the FHIR directory but no named plans were returned,
+  // surface a generic entry so the modal isn't blank.
+  const plans = dedupePlans(fhirResult.plans);
+  if (fhirResult.found && plans.length === 0) {
     plans.push({
       name: 'Humana Medicare (network confirmed, plan detail unavailable)',
       type: 'General',
-      source: fhirResult.found ? 'Humana FHIR' : 'Humana Finder'
+      source: 'Humana FHIR'
     });
   }
 
-  return { found, plans };
+  return { found: fhirResult.found, plans };
 }
 
 function dedupePlans(plans) {
@@ -643,7 +643,45 @@ async function checkHumanaFHIR(npi) {
   }
 }
 
+// Build a deep-link URL to finder.humana.com's entry page, with zip pre-filled.
+//
+// Why not the /results URL: Humana's Finder UX forces plan selection BEFORE
+// you can enter a doctor name (zip → plan type → specific plan → search).
+// Without a specific network+pfpKey the /results URL finds nothing, and we
+// can't know the network in advance — that's what the salesman is actually
+// shopping for. So the button lands them on the entry page, their zip is
+// already populated, and we put the doctor's name on their clipboard so
+// they can paste it when Humana's UI finally asks for it.
+function buildHumanaFinderUrl(provider) {
+  const zip = provider.zip || '';
+  const params = new URLSearchParams({ zipCode: zip });
+  return `https://finder.humana.com/finder/medical?${params.toString()}`;
+}
+
+// Return the text to copy to clipboard when the user clicks the verify button.
+// For providers: "Marcus Babaoff". For orgs: the org name.
+function humanaClipboardText(provider) {
+  if (provider.is_org) return provider.org_name || provider.name || '';
+  return `${provider.first_name || ''} ${provider.last_name || ''}`.trim()
+         || provider.name || '';
+}
+
 async function checkHumanaFinder(provider, zipCode) {
+  /*
+   * DEPRECATED STUB (2026-04-18). The Finder API sits behind Cloudflare bot
+   * protection that silently returns 200-empty to any Cloudflare Worker
+   * request, regardless of headers/cookies/warmup. Kept as a no-op so older
+   * call sites don't throw; for providers not in FHIR we now use the
+   * deep-link button (buildHumanaFinderUrl) for visual verification.
+   */
+  return { found: false, plans: [] };
+}
+
+// The original Finder API implementation is preserved below for reference,
+// but is unreachable from the app. Left in place so we can revive it if
+// Humana ever relaxes their bot protection, or if we move to a headless-
+// browser proxy that can earn a real cf_bm session.
+async function _checkHumanaFinderOriginal_unused(provider, zipCode) {
   /*
    * Finder API — the endpoint that powers finder.humana.com.
    *
@@ -1343,7 +1381,11 @@ function makeCard(prov, index) {
     }
   }
 
-  // Humana Badge + manual verify link
+  // Humana row: badge + deep-link verification button.
+  // Providers not in FHIR aren't necessarily out-of-network — Humana's
+  // Finder directory covers more providers than FHIR. The verify button
+  // deep-links into finder.humana.com pre-populated with the name + zip,
+  // letting a salesperson confirm in ~3 seconds.
   const humanaRow = document.createElement('div');
   humanaRow.style.cssText = 'display:flex;gap:8px;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid var(--separator);flex-wrap:wrap;';
 
@@ -1356,23 +1398,58 @@ function makeCard(prov, index) {
     badge.setAttribute('data-plans', JSON.stringify(prov.humana_plans || []));
     humanaRow.appendChild(badge);
   } else if (prov.humana_found === false) {
-    // Explicitly checked and not found — show muted indicator so user knows it was checked.
+    // Explicitly checked and not in FHIR. Not conclusive — nudge the user to
+    // the deep-link button rather than saying "not in Humana" outright.
     const miss = document.createElement('span');
-    miss.style.cssText = 'font-size:8px;color:var(--text-dim);font-style:italic;';
-    miss.textContent = 'Not in Humana Finder';
+    miss.style.cssText = 'font-size:12px;color:var(--text-dim);font-style:italic;';
+    miss.textContent = 'Not in Humana FHIR — confirm on Humana.com →';
     humanaRow.appendChild(miss);
   }
 
-  // Manual verify link — always present. Reverse-engineered Finder API will
-  // never hit 100% recall; this button takes you to Humana's own search
-  // pre-populated with this NPI so you can eyeball it.
+  // Hint line explaining the clipboard behavior. Only show it when the
+  // primary (FHIR-miss) action is visible — otherwise the button is a
+  // secondary confirmation and the extra copy would be noise.
+  // Declared before the button so the click handler can reference it.
+  let hint = null;
+  if (prov.humana_found === false) {
+    hint = document.createElement('div');
+    hint.style.cssText = 'width:100%;font-size:10px;color:var(--text-dim);margin-top:4px;font-style:italic;';
+    hint.textContent = 'Click to copy name + open Humana. Paste it after you pick a plan.';
+  }
+
+  // Deep-link verify button. Visually emphasized when FHIR returned nothing
+  // (this is the primary action in that case) and kept subtle otherwise.
+  // On click: copy the provider name to clipboard so the user can paste
+  // after Humana's forced plan-selection flow, then open Humana Finder.
   const verifyLink = document.createElement('a');
-  verifyLink.href = `https://finder.humana.com/finder/medical/results?zipcode=${encodeURIComponent(prov.zip || '')}&searchType=5&searchText=${encodeURIComponent(prov.npi)}`;
+  verifyLink.href = buildHumanaFinderUrl(prov);
   verifyLink.target = '_blank';
   verifyLink.rel = 'noopener noreferrer';
-  verifyLink.className = 'verify-link';
-  verifyLink.textContent = 'Verify on Humana.com ↗';
+  verifyLink.className = prov.humana_found === false ? 'verify-link verify-link-primary' : 'verify-link';
+  verifyLink.textContent = prov.humana_found === false ? 'Search on Humana.com ↗' : 'Verify on Humana.com ↗';
+
+  const clipText = humanaClipboardText(prov);
+  verifyLink.addEventListener('click', () => {
+    // Fire-and-forget; don't block the navigation. If the clipboard API
+    // rejects (permissions, insecure context), the link still opens —
+    // worst case the user types the name manually.
+    if (clipText && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(clipText).catch(() => {});
+    }
+    // Flash a confirmation on the hint line so the user knows the name
+    // is actually on their clipboard before they paste.
+    if (hint) {
+      const original = hint.textContent;
+      hint.textContent = `✓ "${clipText}" copied — paste after picking a plan`;
+      hint.style.color = 'var(--accent)';
+      setTimeout(() => {
+        hint.textContent = original;
+        hint.style.color = '';
+      }, 3000);
+    }
+  });
   humanaRow.appendChild(verifyLink);
+  if (hint) humanaRow.appendChild(hint);
 
   body.appendChild(humanaRow);
 

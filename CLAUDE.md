@@ -20,11 +20,11 @@ The NPPES registry is publicly searchable — any NPI can be looked up to retrie
 
 ---
 
-## MEMORY SYSTEM
+## MEMORY
 
-This folder has its own MEMORY.md, isolated from the parent Work hub. Use it for project-specific notes — version history, known issues, feature requests, or usage context.
+Read `MEMORY.md` at session start — version history and the Humana FHIR gotchas live there.
 
-**Memory is user-triggered only.** Only write to MEMORY.md when Justin explicitly asks.
+Memory rules follow the workspace protocol — see root `CLAUDE.md` and `Claude OS/memory/conventions.md`. Project memory is Claude-triggered (write durable decisions, surface what was written for review). When the tool ships a new version, append it to Version History in `MEMORY.md`.
 
 ---
 

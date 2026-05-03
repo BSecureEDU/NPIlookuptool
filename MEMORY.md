@@ -1,7 +1,5 @@
 # NPI Lookup Tool — Memory
 
-_Last updated: 2026-04-01_
-
 ## Version History
 <!-- Track notable changes between versions here. -->
 
